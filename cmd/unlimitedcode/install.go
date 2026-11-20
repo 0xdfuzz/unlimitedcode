@@ -28,29 +28,58 @@ func cmdInstall(args []string, interactive bool) {
 	autostart := fs.Bool("autostart", false, "also install OS logon autostart (optional; plugin starts UnlimitedCode on demand by default)")
 	fs.Parse(args)
 
-	if interactive && isAlreadyInstalled() {
-		fmt.Printf("UnlimitedCode %s is already installed.\n\n", version)
-		fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
-		fmt.Println("  [2] Uninstall (remove plugin & proxy)")
-		fmt.Println("  [3] Uninstall + Purge (remove everything)")
-		fmt.Println("  [0] Exit")
-		fmt.Print("\nChoose [1/2/3/0]: ")
-		choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		switch strings.TrimSpace(choice) {
-		case "1":
-			// continue into install/repair below
-		case "2":
-			cmdUninstall(nil)
-			pauseIfWindows()
-			return
-		case "3":
-			cmdUninstall([]string{"--purge"})
-			pauseIfWindows()
-			return
-		default:
-			return
+	if interactive {
+		if isAlreadyInstalled() {
+			fmt.Printf("UnlimitedCode v%s (installed)\n\n", version)
+			fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
+			fmt.Println("  [2] Status & Diagnostics")
+			fmt.Println("  [3] Uninstall (remove plugin & proxy)")
+			fmt.Println("  [4] Uninstall + Purge (remove everything)")
+			fmt.Println("  [0] Exit")
+			fmt.Print("\nChoose [1/2/3/4/0]: ")
+			choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			fmt.Println()
+			switch strings.TrimSpace(choice) {
+			case "1":
+				// continue into install/repair below
+			case "2":
+				cmdDoctor(nil)
+				fmt.Println()
+				if setup.Health(config.Default().Control) {
+					cmdStatus(nil)
+				}
+				pauseIfWindows()
+				return
+			case "3":
+				cmdUninstall(nil)
+				pauseIfWindows()
+				return
+			case "4":
+				cmdUninstall([]string{"--purge"})
+				pauseIfWindows()
+				return
+			default:
+				return
+			}
+		} else {
+			fmt.Printf("UnlimitedCode v%s\n\n", version)
+			fmt.Println("  [1] Install (plugin + proxy for OpenCode)")
+			fmt.Println("  [2] Diagnostics (check environment)")
+			fmt.Println("  [0] Exit")
+			fmt.Print("\nChoose [1/2/0]: ")
+			choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			fmt.Println()
+			switch strings.TrimSpace(choice) {
+			case "1":
+				// continue into install below
+			case "2":
+				cmdDoctor(nil)
+				pauseIfWindows()
+				return
+			default:
+				return
+			}
 		}
-		fmt.Println()
 	}
 
 	cfg, err := o.load(fs)
@@ -114,7 +143,8 @@ func cmdInstall(args []string, interactive bool) {
 	}
 
 	fmt.Println()
-	fmt.Println("UnlimitedCode installed successfully. Open OpenCode and use /unlimited, /unlimited-stats, or /rotate.")
+	fmt.Println("Installed successfully! Restart OpenCode and enjoy :)")
+	fmt.Println("Inside OpenCode, try: /unlimited · /unlimited-stats · /rotate")
 	if interactive {
 		pauseIfWindows()
 	}
