@@ -40,9 +40,17 @@ type Egress struct {
 	WarpProxy      string `json:"warp_proxy"`
 	Upstream       string `json:"upstream"`
 	DirectFallback bool   `json:"direct_fallback"`
+	Passthrough    *bool  `json:"passthrough,omitempty"`
 	UsqueBin       string `json:"usque_bin,omitempty"`
 	PoolSize       int    `json:"pool_size,omitempty"`
 	PoolBasePort   int    `json:"pool_base_port,omitempty"`
+}
+
+func (e Egress) PassthroughEnabled() bool {
+	if e.Passthrough == nil {
+		return true
+	}
+	return *e.Passthrough
 }
 
 type Hop struct {
@@ -79,7 +87,7 @@ func Default() Config {
 		Listen:     "127.0.0.1:42987",
 		Control:    "127.0.0.1:42988",
 		Allow:      []string{"opencode.ai", "*.opencode.ai"},
-		AllowPorts: []int{443},
+		AllowPorts: []int{443, 80},
 		Egress: Egress{
 			Mode:         ModeUsque,
 			WarpProxy:    "http://127.0.0.1:40000",
