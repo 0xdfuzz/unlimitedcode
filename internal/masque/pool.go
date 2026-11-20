@@ -457,7 +457,6 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 			s.setFailed(ctx.Err())
 			return ctx.Err()
 		}
-		p.closeSlotClient(s)
 
 		var nextCfg slotConfig
 		var err error
@@ -507,8 +506,6 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 }
 
 func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) error {
-	p.closeSlotClient(s)
-
 	client, err := newL4Client(cfg)
 	if err != nil {
 		s.setFailed(err)
@@ -545,6 +542,7 @@ func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) er
 	ip := trace["ip"]
 	prefix := NormalizePrefix(ip)
 	s.mu.Lock()
+	oldClient := s.client
 	s.client = client
 	s.state = "ready"
 	s.ip = ip
@@ -552,6 +550,9 @@ func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) er
 	s.colo = trace["colo"]
 	s.lastErr = ""
 	s.mu.Unlock()
+	if oldClient != nil && oldClient != client {
+		_ = oldClient.Close()
+	}
 	return nil
 }
 
@@ -729,10 +730,17 @@ func NormalizePrefix(raw string) string {
 }
 
 func fetchTrace(ctx context.Context, client *l4Client) (map[string]string, error) {
+	if vals, err := fetchTraceTarget(ctx, client, "[2606:4700:4700::1111]:443"); err == nil {
+		return vals, nil
+	}
+	return fetchTraceTarget(ctx, client, "1.1.1.1:443")
+}
+
+func fetchTraceTarget(ctx context.Context, client *l4Client, target string) (map[string]string, error) {
 	tctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
-	raw, err := client.DialContext(tctx, "[2606:4700:4700::1111]:443")
+	raw, err := client.DialContext(tctx, target)
 	if err != nil {
 		return nil, err
 	}

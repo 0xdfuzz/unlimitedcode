@@ -91,7 +91,7 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 	}
 
 	if path, err := opencode.Find(); err != nil {
-		add("opencode", Fail, err.Error())
+		add("opencode", Warn, "CLI not found on PATH (Desktop-only install uses ~/.config/opencode)")
 	} else {
 		detail := path
 		if v, err := opencode.Version(ctx, path); err == nil && v != "" {

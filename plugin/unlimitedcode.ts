@@ -12,6 +12,7 @@ const sessionAliases = new Map<string, string>()
 
 let lastIDTs = 0
 let idCounter = 0
+let lastKnownRotations = -1
 
 // Matches OpenCode's Identifier.descending() contract ("ses_" + 12 hex of ~(ms*0x1000+counter) + 14 Base62).
 function generateSessionID(): string {
@@ -44,8 +45,15 @@ function rotateSessionAlias(sessionID: string): string {
   return alias
 }
 
+function ensureSessionAlias(sessionID: string): string {
+  if (!sessionID) return ""
+  const existing = sessionAliases.get(sessionID)
+  if (existing) return existing
+  return rotateSessionAlias(sessionID)
+}
+
 function applySessionAlias(headers: Record<string, string> | Headers, sessionID: string): void {
-  const alias = sessionAliases.get(sessionID)
+  const alias = ensureSessionAlias(sessionID)
   if (!alias) return
   const keys = [
     "x-opencode-session",
@@ -133,12 +141,31 @@ async function ensureDaemonRunning(): Promise<boolean> {
   } catch {
     return false
   }
-  const deadline = Date.now() + 12_000
+  const deadline = Date.now() + 25_000
   while (Date.now() < deadline) {
     if (await isDaemonHealthy()) return true
     await new Promise((r) => setTimeout(r, 250))
   }
   return false
+}
+
+async function syncDaemonState(): Promise<any | null> {
+  const st = await controlCall("/status", "GET", undefined, 1_500)
+  if (!st) return null
+  if (st.listen) {
+    const proxyURL = `http://${st.listen}`
+    if (!process.env.HTTPS_PROXY) process.env.HTTPS_PROXY = proxyURL
+    if (!process.env.HTTP_PROXY) process.env.HTTP_PROXY = proxyURL
+    if (!process.env.NO_PROXY) process.env.NO_PROXY = "localhost,127.0.0.1,::1"
+    if (!process.env.no_proxy) process.env.no_proxy = "localhost,127.0.0.1,::1"
+  }
+  const rot = Number(st.hop?.count ?? 0)
+  if (lastKnownRotations >= 0 && rot !== lastKnownRotations) {
+    // Manual /rotate from TUI or Desktop also rotates all wire session IDs.
+    sessionAliases.clear()
+  }
+  lastKnownRotations = rot
+  return st
 }
 
 async function controlCall(path: string, method = "GET", body?: any, timeoutMs = 8_000): Promise<any | null> {
@@ -197,12 +224,15 @@ async function requestRotate(event: any): Promise<{ retry: boolean; delay: numbe
 }
 
 async function setup(ctx: any): Promise<void> {
-  await ensureDaemonRunning()
+  if (await ensureDaemonRunning()) {
+    await syncDaemonState()
+  }
 
   if (typeof ctx?.session?.hook !== "function") return
 
   try {
-    await ctx.session.hook("model.request", (event: any) => {
+    await ctx.session.hook("model.request", async (event: any) => {
+      await syncDaemonState()
       const sid = String(event?.sessionID ?? "")
       if (sid && event?.headers) {
         applySessionAlias(event.headers, sid)
@@ -222,7 +252,8 @@ async function setup(ctx: any): Promise<void> {
   await ctx.session.hook("retry", async (event: any) => {
     if (event?.error?.type !== "provider.free-limit") return
 
-    const st = await controlCall("/status", "GET", undefined, 1_500)
+    await ensureDaemonRunning()
+    const st = await syncDaemonState()
     if (st?.hop?.paused) return { retry: false, delay: 0 }
 
     const sid = String(event?.sessionID ?? "")

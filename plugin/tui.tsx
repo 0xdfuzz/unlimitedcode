@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -65,9 +66,56 @@ function controlToken(): string {
   }
 }
 
+function installedBinary(): string {
+  const name = process.platform === "win32" ? "unlimitedcode.exe" : "unlimitedcode"
+  return join(stateHome(), name)
+}
+
+async function isDaemonHealthy(): Promise<boolean> {
+  try {
+    const res = await fetch(controlURL() + "/health", { signal: AbortSignal.timeout(800) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+async function ensureDaemonRunning(): Promise<boolean> {
+  if (await isDaemonHealthy()) return true
+  const bin = installedBinary()
+  if (!existsSync(bin)) return false
+  try {
+    const childEnv = { ...process.env }
+    delete childEnv.HTTPS_PROXY
+    delete childEnv.HTTP_PROXY
+    delete childEnv.https_proxy
+    delete childEnv.http_proxy
+    const child = spawn(bin, ["daemon", "--parent-pid", String(process.pid)], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: childEnv,
+    })
+    child.unref()
+  } catch {
+    return false
+  }
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    if (await isDaemonHealthy()) return true
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  return false
+}
+
 async function controlCall(path: string, method = "GET", body?: any, timeoutMs = 8_000): Promise<any | null> {
-  const token = controlToken()
-  if (!token) return null
+  let token = controlToken()
+  if (!token) {
+    if (await ensureDaemonRunning()) {
+      token = controlToken()
+    }
+    if (!token) return null
+  }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -715,7 +763,12 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
   const [hovered, setHovered] = createSignal(false)
 
   const refresh = async () => {
-    const st = await controlCall("/status", "GET", undefined, 1_500)
+    let st = await controlCall("/status", "GET", undefined, 1_500)
+    if (!st) {
+      if (await ensureDaemonRunning()) {
+        st = await controlCall("/status", "GET", undefined, 2_000)
+      }
+    }
     if (!st) {
       setState("offline")
       return

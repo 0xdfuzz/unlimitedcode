@@ -39,16 +39,47 @@ func candidates() []string {
 	if runtime.GOOS == "windows" {
 		if appdata := os.Getenv("APPDATA"); appdata != "" {
 			out = append(out, filepath.Join(appdata, "npm", "node_modules", "@opencode", "cli", "bin", "opencode.exe"))
+			// OpenCode Desktop stages its bundled CLI under %APPDATA%\OpenCode\cli\<stage>\opencode*.exe
+			if matches, err := filepath.Glob(filepath.Join(appdata, "OpenCode", "cli", "*", "opencode*.exe")); err == nil {
+				out = append(out, matches...)
+			}
 		}
 		if local := os.Getenv("LOCALAPPDATA"); local != "" {
-			out = append(out, filepath.Join(local, "npm", "node_modules", "@opencode", "cli", "bin", "opencode.exe"))
+			out = append(out,
+				filepath.Join(local, "npm", "node_modules", "@opencode", "cli", "bin", "opencode.exe"),
+				filepath.Join(local, "Programs", "OpenCode", "resources", "opencode-cli.exe"),
+				filepath.Join(local, "Programs", "OpenCode", "resources", "opencode.exe"),
+				filepath.Join(local, "OpenCode", "resources", "opencode-cli.exe"),
+				filepath.Join(local, "OpenCode", "resources", "opencode.exe"),
+			)
+			if matches, err := filepath.Glob(filepath.Join(local, "OpenCode", "cli", "*", "opencode*.exe")); err == nil {
+				out = append(out, matches...)
+			}
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		out = append(out, filepath.Join(home, ".local", "bin", "opencode"))
-		out = append(out, filepath.Join(home, ".bun", "bin", "opencode"))
+		out = append(out,
+			filepath.Join(home, ".opencode", "bin", "opencode"),
+			filepath.Join(home, ".local", "bin", "opencode"),
+			filepath.Join(home, ".bun", "bin", "opencode"),
+		)
+		if runtime.GOOS == "darwin" {
+			if matches, err := filepath.Glob(filepath.Join(home, "Library", "Application Support", "OpenCode", "cli", "*", "opencode*")); err == nil {
+				out = append(out, matches...)
+			}
+		} else if runtime.GOOS == "linux" {
+			if matches, err := filepath.Glob(filepath.Join(home, ".config", "OpenCode", "cli", "*", "opencode*")); err == nil {
+				out = append(out, matches...)
+			}
+		}
 	}
-	out = append(out, "/usr/local/bin/opencode", "/usr/bin/opencode", "/opt/homebrew/bin/opencode")
+	out = append(out,
+		"/Applications/OpenCode.app/Contents/Resources/opencode-cli",
+		"/Applications/OpenCode.app/Contents/Resources/opencode",
+		"/usr/local/bin/opencode",
+		"/usr/bin/opencode",
+		"/opt/homebrew/bin/opencode",
+	)
 	return out
 }
 

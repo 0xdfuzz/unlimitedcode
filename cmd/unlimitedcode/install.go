@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"unlimitedcode/internal/config"
 	"unlimitedcode/internal/opencode"
@@ -89,10 +90,7 @@ func cmdInstall(args []string, interactive bool) {
 	if err != nil {
 		fail(err)
 	}
-	official, err := opencode.Find()
-	if err != nil {
-		fail(fmt.Errorf("OpenCode not found: %w (install OpenCode first)", err))
-	}
+	official, _ := opencode.Find()
 
 	self, err := os.Executable()
 	if err != nil {
@@ -121,13 +119,16 @@ func cmdInstall(args []string, interactive bool) {
 	fmt.Printf("plugin    %s\n", pluginPath)
 
 	proxyURL := "http://" + cfg.Listen
-	for _, pair := range [][2]string{
-		{"HTTPS_PROXY", proxyURL},
-		{"HTTP_PROXY", proxyURL},
-		{"NO_PROXY", "localhost,127.0.0.1,::1"},
-	} {
-		if out, err := exec.Command(official, "service", "set", "env", pair[0], pair[1]).CombinedOutput(); err != nil {
-			fail(fmt.Errorf("service set env %s: %v: %s", pair[0], err, strings.TrimSpace(string(out))))
+	if _, err := setup.SetOpenCodeServiceEnv(proxyURL); err != nil {
+		fail(fmt.Errorf("configure OpenCode service env: %w", err))
+	}
+	if official != "" {
+		for _, pair := range [][2]string{
+			{"HTTPS_PROXY", proxyURL},
+			{"HTTP_PROXY", proxyURL},
+			{"NO_PROXY", "localhost,127.0.0.1,::1"},
+		} {
+			_ = exec.Command(official, "service", "set", "env", pair[0], pair[1]).Run()
 		}
 	}
 	fmt.Printf("proxy     %s (OpenCode service env)\n", proxyURL)
@@ -140,9 +141,17 @@ func cmdInstall(args []string, interactive bool) {
 		fmt.Printf("autostart %s\n", vbs)
 	}
 
+	if warmDaemon(installedBin, cfg.Control) {
+		fmt.Printf("daemon    http://%s (online & warm)\n", cfg.Listen)
+	} else {
+		fmt.Printf("daemon    will auto-start when OpenCode opens\n")
+	}
+
 	// Restart OpenCode background service if reachable so the new plugin & proxy apply immediately.
-	if err := exec.CommandContext(context.Background(), official, "service", "restart").Run(); err == nil {
-		fmt.Println("opencode  service restarted")
+	if official != "" {
+		if err := exec.CommandContext(context.Background(), official, "service", "restart").Run(); err == nil {
+			fmt.Println("opencode  service restarted")
+		}
 	}
 
 	fmt.Println()
@@ -172,6 +181,42 @@ func pauseIfWindows() {
 	}
 }
 
+// warmDaemon starts the installed daemon in the background during installation
+// so control.token and the MASQUE pool slots are registered and ready before
+// the user opens OpenCode CLI or Desktop.
+func warmDaemon(binPath, controlAddr string) bool {
+	if setup.Health(controlAddr) {
+		return true
+	}
+	cmd := exec.Command(binPath, "daemon")
+	cmd.Env = cleanProxyEnv(os.Environ())
+	if err := cmd.Start(); err != nil {
+		return false
+	}
+	_ = cmd.Process.Release()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if setup.Health(controlAddr) {
+			return true
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return false
+}
+
+func cleanProxyEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(k) {
+		case "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY":
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func cmdUninstall(args []string) {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	purge := fs.Bool("purge", false, "also delete UnlimitedCode state directory (config, logs, MASQUE slot keys)")
@@ -187,13 +232,14 @@ func cmdUninstall(args []string) {
 		fmt.Printf("autostart removed %s\n", vbs)
 	}
 
+	_, _ = setup.ClearOpenCodeServiceEnv()
 	if official, err := opencode.Find(); err == nil {
 		for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"} {
 			_ = exec.Command(official, "service", "unset", "env", key).Run()
 		}
-		fmt.Println("proxy     cleared from OpenCode service env")
 		_ = exec.Command(official, "service", "restart").Run()
 	}
+	fmt.Println("proxy     cleared from OpenCode service env")
 
 	if *purge {
 		home := config.Home()

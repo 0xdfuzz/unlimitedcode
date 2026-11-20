@@ -118,9 +118,47 @@ type cfAccountResp struct {
 	} `json:"config"`
 }
 
+var (
+	regMu     sync.Mutex
+	lastRegAt time.Time
+	masquePorts = []int{443, 8443, 4500, 500, 1701}
+)
+
 // registerAndEnroll creates a new Cloudflare WARP device and immediately
-// enrolls a fresh P-256 MASQUE keypair.
+// enrolls a fresh P-256 MASQUE keypair. Serialized across slots so parallel
+// first-boot registrations from the same home IP do not hit Cloudflare 429s.
 func registerAndEnroll(ctx context.Context) (slotConfig, error) {
+	regMu.Lock()
+	defer regMu.Unlock()
+
+	if gap := 500*time.Millisecond - time.Since(lastRegAt); gap > 0 {
+		select {
+		case <-ctx.Done():
+			return slotConfig{}, ctx.Err()
+		case <-time.After(gap):
+		}
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return slotConfig{}, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 800 * time.Millisecond):
+			}
+		}
+		cfg, err := registerAndEnrollOnce(ctx)
+		lastRegAt = time.Now()
+		if err == nil {
+			return cfg, nil
+		}
+		lastErr = err
+	}
+	return slotConfig{}, lastErr
+}
+
+func registerAndEnrollOnce(ctx context.Context) (slotConfig, error) {
 	var wgPub [32]byte
 	if _, err := rand.Read(wgPub[:]); err != nil {
 		return slotConfig{}, err
@@ -336,13 +374,14 @@ func buildTLSConfig(cfg slotConfig) (*tls.Config, error) {
 type l4Client struct {
 	tlsConfig  *tls.Config
 	quicConfig *quic.Config
-	endpoint   *net.UDPAddr
+	endpoints  []*net.UDPAddr
 
-	mu         sync.Mutex
-	udpConn    *net.UDPConn
-	quicConn   *quic.Conn
-	clientConn *http3.ClientConn
-	closed     bool
+	mu          sync.Mutex
+	endpointIdx int
+	udpConn     *net.UDPConn
+	quicConn    *quic.Conn
+	clientConn  *http3.ClientConn
+	closed      bool
 }
 
 func newL4Client(cfg slotConfig) (*l4Client, error) {
@@ -350,9 +389,21 @@ func newL4Client(cfg slotConfig) (*l4Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	ip := net.ParseIP(cfg.EndpointV4)
-	if ip == nil {
-		return nil, fmt.Errorf("invalid MASQUE endpoint IP %q", cfg.EndpointV4)
+	var ips []net.IP
+	if ip4 := net.ParseIP(cfg.EndpointV4); ip4 != nil {
+		ips = append(ips, ip4)
+	}
+	if ip6 := net.ParseIP(cfg.EndpointV6); ip6 != nil {
+		ips = append(ips, ip6)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("invalid MASQUE endpoint IPs v4=%q v6=%q", cfg.EndpointV4, cfg.EndpointV6)
+	}
+	var endpoints []*net.UDPAddr
+	for _, port := range masquePorts {
+		for _, ip := range ips {
+			endpoints = append(endpoints, &net.UDPAddr{IP: ip, Port: port})
+		}
 	}
 	return &l4Client{
 		tlsConfig: tlsCfg,
@@ -361,7 +412,7 @@ func newL4Client(cfg slotConfig) (*l4Client, error) {
 			KeepAlivePeriod: 15 * time.Second,
 			MaxIdleTimeout:  5 * time.Minute,
 		},
-		endpoint: &net.UDPAddr{IP: ip, Port: defaultMASQUEPort},
+		endpoints: endpoints,
 	}, nil
 }
 
@@ -462,19 +513,22 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		c.mu.Unlock()
 	}
 
-	bindIP := net.IPv4zero
-	if c.endpoint.IP.To4() == nil {
-		bindIP = net.IPv6zero
-	}
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: bindIP})
+	c.mu.Lock()
+	ep := c.endpoints[c.endpointIdx%len(c.endpoints)]
+	c.mu.Unlock()
+
+	udpConn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	// ConnectionIDLength=20 avoids Cloudflare MASQUE PROTOCOL_VIOLATION disconnects.
 	tr := &quic.Transport{Conn: udpConn, ConnectionIDLength: 20}
-	quicConn, err := tr.Dial(ctx, c.endpoint, c.tlsConfig, c.quicConfig)
+	quicConn, err := tr.Dial(ctx, ep, c.tlsConfig, c.quicConfig)
 	if err != nil {
 		_ = udpConn.Close()
+		c.mu.Lock()
+		c.endpointIdx = (c.endpointIdx + 1) % len(c.endpoints)
+		c.mu.Unlock()
 		return nil, nil, err
 	}
 	h3 := (&http3.Transport{}).NewClientConn(quicConn)

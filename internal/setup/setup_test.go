@@ -95,3 +95,42 @@ func TestEnsureConfigDoesNotOverwrite(t *testing.T) {
 		t.Fatalf("config changed: %s", current)
 	}
 }
+
+func TestSetAndClearOpenCodeServiceEnv(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	ocDir := filepath.Join(xdg, "opencode")
+	if err := os.MkdirAll(ocDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mikoshi := filepath.Join(ocDir, "service-mikoshi.json")
+	if err := os.WriteFile(mikoshi, []byte(`{"password":"secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := SetOpenCodeServiceEnv("http://127.0.0.1:42987")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) != 2 {
+		t.Fatalf("updated = %v, want 2 files", updated)
+	}
+	raw, err := os.ReadFile(mikoshi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"HTTPS_PROXY": "http://127.0.0.1:42987"`) || !strings.Contains(string(raw), `"password": "secret"`) {
+		t.Fatalf("service-mikoshi.json = %s", raw)
+	}
+
+	if _, err := ClearOpenCodeServiceEnv(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(mikoshi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "HTTPS_PROXY") || !strings.Contains(string(raw), `"password": "secret"`) {
+		t.Fatalf("after clear service-mikoshi.json = %s", raw)
+	}
+}

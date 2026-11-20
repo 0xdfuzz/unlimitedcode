@@ -1,5 +1,6 @@
 "use strict"
 
+const { spawn } = require("node:child_process")
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
@@ -33,6 +34,48 @@ function controlToken() {
   } catch {
     return ""
   }
+}
+
+function installedBinary() {
+  const name = process.platform === "win32" ? "unlimitedcode.exe" : "unlimitedcode"
+  return path.join(stateHome(), name)
+}
+
+async function isDaemonHealthy() {
+  try {
+    const res = await fetch(controlURL() + "/health", { signal: AbortSignal.timeout(800) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+async function ensureDaemonRunning() {
+  if (await isDaemonHealthy()) return true
+  const bin = installedBinary()
+  if (!fs.existsSync(bin)) return false
+  try {
+    const childEnv = { ...process.env }
+    delete childEnv.HTTPS_PROXY
+    delete childEnv.HTTP_PROXY
+    delete childEnv.https_proxy
+    delete childEnv.http_proxy
+    const child = spawn(bin, ["daemon", "--parent-pid", String(process.pid)], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: childEnv,
+    })
+    child.unref()
+  } catch {
+    return false
+  }
+  const deadline = Date.now() + 20000
+  while (Date.now() < deadline) {
+    if (await isDaemonHealthy()) return true
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  return false
 }
 
 function shortenIPv6(ip) {
@@ -281,7 +324,12 @@ const UnlimitedIpc = sdk.Ipc.define({
 })
 
 async function fetchSummary() {
-  const st = await controlCall("/status", "GET", undefined, 2000)
+  let st = await controlCall("/status", "GET", undefined, 2000)
+  if (!st) {
+    if (await ensureDaemonRunning()) {
+      st = await controlCall("/status", "GET", undefined, 2000)
+    }
+  }
   if (!st) {
     return {
       online: false,
