@@ -42,15 +42,25 @@ hosts (browser, `webfetch`, docs, localhost) pass through directly.
 
 ## Install (Quick Start)
 
-Download the latest release binary for your OS from **Releases**, then run it:
+**Windows (PowerShell — skips SmartScreen prompt):**
 
-- **Windows:** double-click `unlimitedcode.exe` (or run `.\unlimitedcode.exe`)
-  and pick **`[1] Install`**.
-- **Linux / macOS:**
-  ```sh
-  chmod +x unlimitedcode
-  ./unlimitedcode install
-  ```
+```powershell
+$r = irm https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest
+$a = $r.assets | Where-Object name -like "*_windows_amd64.exe" | Select-Object -First 1
+iwr $a.browser_download_url -OutFile "$env:TEMP\unlimitedcode.exe"
+& "$env:TEMP\unlimitedcode.exe" install
+```
+
+Or download `unlimitedcode_*_windows_amd64.exe` from [Releases](https://github.com/0xdfuzz/unlimitedcode/releases/latest), double-click it, and pick **`[1] Install`** (if Windows SmartScreen prompts for an unsigned binary, click *More info → Run anyway*).
+
+**Linux / macOS:**
+
+```sh
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+URL=$(curl -s https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest | grep -o "https://[^\"]*_${OS}_${ARCH}\"" | tr -d '"' | head -n1)
+curl -fsSL "$URL" -o /tmp/unlimitedcode && chmod +x /tmp/unlimitedcode && /tmp/unlimitedcode install
+```
 
 Restart OpenCode and use `/unlimited`, `/unlimited-stats`, or `/rotate`.
 
