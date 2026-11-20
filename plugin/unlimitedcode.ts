@@ -396,7 +396,7 @@ async function sendNotice(ctx: any, sessionID: string, text: string): Promise<vo
 }
 
 async function setup(ctx: any): Promise<void> {
-  void ensureDaemonRunning()
+  await ensureDaemonRunning()
 
   if (typeof ctx?.session?.hook === "function") {
     try {

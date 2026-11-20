@@ -114,7 +114,7 @@ func cmdInstall(args []string, interactive bool) {
 	}
 
 	fmt.Println()
-	fmt.Println("UnlimitedCode installed successfully. Open OpenCode and use /UnlimitedCode or /rotate.")
+	fmt.Println("UnlimitedCode installed successfully. Open OpenCode and use /unlimited, /unlimited-stats, or /rotate.")
 	if interactive {
 		pauseIfWindows()
 	}
