@@ -10,9 +10,6 @@ const { createSignal, onCleanup, onMount } = require("solid-js")
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const WINDOWS = ["24h", "7d", "30d", "All"]
-const RATE_INPUT_PER_M = 0.5
-const RATE_OUTPUT_PER_M = 2.0
-const RATE_CACHE_PER_M = 0.05
 
 function stateHome() {
   if (process.env.UNLIMITEDCODE_HOME) return process.env.UNLIMITEDCODE_HOME
@@ -100,21 +97,40 @@ function fmtNum(n) {
   return String(Math.round(n))
 }
 
-function fmtSaved(b) {
-  const usd =
-    (b.inTok / 1_000_000) * RATE_INPUT_PER_M +
-    (b.outTok / 1_000_000) * RATE_OUTPUT_PER_M +
-    (b.cacheTok / 1_000_000) * RATE_CACHE_PER_M
-  return "~$" + (usd < 0.01 ? "0.00" : usd.toFixed(2))
+function installedSinceMs() {
+  const home = stateHome()
+  try {
+    const raw = fs.readFileSync(path.join(home, "installed_at"), "utf8").trim()
+    const ts = Number(raw)
+    if (Number.isFinite(ts) && ts > 0) return ts
+  } catch {}
+  try {
+    const st = fs.statSync(path.join(home, "config.json"))
+    if (st.birthtimeMs > 0) return Math.floor(st.birthtimeMs)
+    if (st.mtimeMs > 0) return Math.floor(st.mtimeMs)
+  } catch {}
+  return 0
 }
 
-function isFreeEntry(parsed, modelId) {
-  const low = modelId.toLowerCase()
-  if (low.endsWith("-free") || low.includes(":free") || low === "big-pickle") return true
-  if (typeof parsed?.cost === "number" && parsed.cost === 0) return true
-  if (typeof parsed?.cost?.total === "number" && parsed.cost.total === 0) return true
+function fmtSinceDate(ts) {
+  if (!ts) return ""
+  try {
+    return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  } catch {
+    return ""
+  }
+}
+
+function isOpenCodeFree(parsed, modelId) {
   const prov = String(parsed?.providerID || parsed?.model?.providerID || "").toLowerCase()
-  if (prov === "opencode" && !parsed?.cost) return true
+  if (prov && prov !== "opencode") return false
+  const low = modelId.toLowerCase()
+  if (low.endsWith("-free") || low === "big-pickle") return true
+  if (prov === "opencode") {
+    if (typeof parsed?.cost === "number") return parsed.cost === 0
+    if (typeof parsed?.cost?.total === "number") return parsed.cost.total === 0
+    if (!parsed?.cost) return true
+  }
   return false
 }
 
@@ -131,12 +147,14 @@ function computeStreakDays(dayKeys) {
 }
 
 function computeStatsJSON() {
+  const sinceMs = installedSinceMs()
+  const sinceLabel = fmtSinceDate(sinceMs)
   const dataDir = process.env.XDG_DATA_HOME
     ? path.join(process.env.XDG_DATA_HOME, "opencode")
     : path.join(os.homedir(), ".local", "share", "opencode")
   const dbPath = path.join(dataDir, "opencode.db")
   if (!fs.existsSync(dbPath)) {
-    return JSON.stringify({ error: "No local OpenCode database found yet." })
+    return JSON.stringify({ sinceLabel, error: "No local OpenCode database found yet." })
   }
   try {
     const { DatabaseSync } = require("node:sqlite")
@@ -147,10 +165,10 @@ function computeStatsJSON() {
       const weekAgo = now - 7 * 86_400_000
       const monthAgo = now - 30 * 86_400_000
       const rows = db
-        .prepare("SELECT time_created, data FROM session_message WHERE type = 'assistant'")
-        .all()
+        .prepare("SELECT time_created, data FROM session_message WHERE type = 'assistant' AND time_created >= ?")
+        .all(sinceMs)
 
-      const makeAcc = () => ({
+      const acc = {
         b: {
           "24h": { inTok: 0, outTok: 0, cacheTok: 0, turns: 0 },
           "7d": { inTok: 0, outTok: 0, cacheTok: 0, turns: 0 },
@@ -167,10 +185,37 @@ function computeStatsJSON() {
         hours: new Array(24).fill(0),
         speedTok: 0,
         speedSec: 0,
-      })
+      }
 
-      const add = (acc, wins, inp, out, cache, mid, dt, sec) => {
+      for (const row of rows) {
+        let parsed
+        try {
+          parsed = JSON.parse(row.data)
+        } catch {
+          continue
+        }
+        const usage = parsed?.usage || parsed?.tokens
+        if (!usage) continue
+        const inp = Number(usage.input ?? usage.inputTokens ?? usage.promptTokens ?? 0)
+        const out = Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0)
+        const cache = Number(usage.cache?.read ?? usage.cacheRead ?? usage.cachedInputTokens ?? 0)
+        if (inp + out + cache <= 0) continue
+
+        const mid = String(parsed?.model?.id || parsed?.modelID || "unknown")
+        if (!isOpenCodeFree(parsed, mid)) continue
+
+        const wins = ["All"]
+        if (row.time_created >= monthAgo) wins.push("30d")
+        if (row.time_created >= weekAgo) wins.push("7d")
+        if (row.time_created >= dayAgo) wins.push("24h")
+
+        const dt = new Date(row.time_created)
+        const started = Number(parsed?.time?.created ?? 0)
+        const completed = Number(parsed?.time?.completed ?? 0)
+        const sec =
+          out > 0 && completed > started && completed - started < 300_000 ? (completed - started) / 1000 : 0
         const tot = inp + out + cache
+
         for (const w of wins) {
           const b = acc.b[w]
           b.inTok += inp
@@ -196,77 +241,50 @@ function computeStatsJSON() {
         }
       }
 
-      const freeAcc = makeAcc()
-      const allAcc = makeAcc()
-
-      for (const row of rows) {
-        let parsed
-        try {
-          parsed = JSON.parse(row.data)
-        } catch {
-          continue
-        }
-        const usage = parsed?.usage || parsed?.tokens
-        if (!usage) continue
-        const inp = Number(usage.input ?? usage.inputTokens ?? usage.promptTokens ?? 0)
-        const out = Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0)
-        const cache = Number(usage.cache?.read ?? usage.cacheRead ?? usage.cachedInputTokens ?? 0)
-        if (inp + out + cache <= 0) continue
-
-        const wins = ["All"]
-        if (row.time_created >= monthAgo) wins.push("30d")
-        if (row.time_created >= weekAgo) wins.push("7d")
-        if (row.time_created >= dayAgo) wins.push("24h")
-
-        const dt = new Date(row.time_created)
-        const started = Number(parsed?.time?.created ?? 0)
-        const completed = Number(parsed?.time?.completed ?? 0)
-        const sec =
-          out > 0 && completed > started && completed - started < 300_000 ? (completed - started) / 1000 : 0
-        const mid = String(parsed?.model?.id || parsed?.modelID || "unknown")
-
-        add(allAcc, wins, inp, out, cache, mid, dt, sec)
-        if (isFreeEntry(parsed, mid)) add(freeAcc, wins, inp, out, cache, mid, dt, sec)
+      if (acc.b.All.turns === 0) {
+        return JSON.stringify({
+          sinceLabel,
+          error: sinceLabel
+            ? `No OpenCode free-tier turns recorded since ${sinceLabel}.`
+            : "No OpenCode free-tier turns recorded yet.",
+        })
       }
 
-      const pack = (acc) => {
-        const all = acc.b.All
-        let peakHour = 0
-        for (let h = 1; h < 24; h++) if (acc.hours[h] > acc.hours[peakHour]) peakHour = h
-        const modelsByWin = {}
-        for (const w of WINDOWS) {
-          const bw = acc.b[w]
-          const grand = Math.max(1, bw.inTok + bw.outTok + bw.cacheTok)
-          modelsByWin[w] = [...acc.modelsByWin[w].entries()]
-            .sort((a, b) => b[1].total - a[1].total)
-            .slice(0, 6)
-            .map(([name, m]) => ({
-              name,
-              total: m.total,
-              turns: m.turns,
-              pct: Math.round((m.total / grand) * 100),
-              tps: m.speedSec > 0 ? Math.round(m.speedTok / m.speedSec) : 0,
-            }))
-        }
-        return {
-          buckets: acc.b,
-          cacheRatio:
-            all.inTok + all.cacheTok > 0
-              ? Math.round((all.cacheTok / (all.inTok + all.cacheTok)) * 100)
-              : 0,
-          avgTps: acc.speedSec > 0 ? (acc.speedTok / acc.speedSec).toFixed(1) : "-",
-          streak: computeStreakDays(acc.days),
-          peakHour,
-          modelsByWin,
-        }
+      const all = acc.b.All
+      let peakHour = 0
+      for (let h = 1; h < 24; h++) if (acc.hours[h] > acc.hours[peakHour]) peakHour = h
+      const modelsByWin = {}
+      for (const w of WINDOWS) {
+        const bw = acc.b[w]
+        const grand = Math.max(1, bw.inTok + bw.outTok + bw.cacheTok)
+        modelsByWin[w] = [...acc.modelsByWin[w].entries()]
+          .sort((a, b) => b[1].total - a[1].total)
+          .slice(0, 6)
+          .map(([name, m]) => ({
+            name,
+            total: m.total,
+            turns: m.turns,
+            pct: Math.round((m.total / grand) * 100),
+            tps: m.speedSec > 0 ? Math.round(m.speedTok / m.speedSec) : 0,
+          }))
       }
-
-      return JSON.stringify({ free: pack(freeAcc), all: pack(allAcc) })
+      return JSON.stringify({
+        sinceLabel,
+        buckets: acc.b,
+        cacheRatio:
+          all.inTok + all.cacheTok > 0
+            ? Math.round((all.cacheTok / (all.inTok + all.cacheTok)) * 100)
+            : 0,
+        avgTps: acc.speedSec > 0 ? (acc.speedTok / acc.speedSec).toFixed(1) : "-",
+        streak: computeStreakDays(acc.days),
+        peakHour,
+        modelsByWin,
+      })
     } finally {
       db.close()
     }
   } catch (err) {
-    return JSON.stringify({ error: String(err?.message || err) })
+    return JSON.stringify({ sinceLabel, error: String(err?.message || err) })
   }
 }
 
@@ -377,7 +395,6 @@ async function fetchSummary() {
 
 function buildStatsElement(statsData, initialSummary, dialog, actions) {
   let summary = initialSummary
-  let freeOnly = Boolean(statsData?.free?.buckets?.All?.turns > 0)
   let activeWin = "All"
   let showPool = false
 
@@ -459,10 +476,6 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
       const idx = WINDOWS.indexOf(activeWin)
       activeWin = WINDOWS[(idx + 1) % WINDOWS.length]
       render()
-    } else if (e.key === "f" || e.key === "F") {
-      e.preventDefault()
-      freeOnly = !freeOnly
-      render()
     }
   }
   // Prevent Kobalte's outside-click detector from closing the dialog when
@@ -483,14 +496,9 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
     const left = document.createElement("div")
     left.style.cssText = "display:flex;align-items:center;gap:8px;"
     const titleSpan = document.createElement("span")
-    titleSpan.innerHTML = `<strong style="color:var(--text-strong,#fff)">UnlimitedCode</strong> <span style="color:var(--text-weak,rgba(255,255,255,0.5))">· Usage Stats</span>`
+    const sinceText = statsData?.sinceLabel ? ` · Free Stats (since ${statsData.sinceLabel})` : " · Free Stats"
+    titleSpan.innerHTML = `<strong style="color:var(--text-strong,#fff)">UnlimitedCode</strong><span style="color:var(--text-weak,rgba(255,255,255,0.5))">${sinceText}</span>`
     left.appendChild(titleSpan)
-    left.appendChild(
-      pillBtn(freeOnly ? "Free" : "All", true, () => {
-        freeOnly = !freeOnly
-        render()
-      }),
-    )
     header.appendChild(left)
 
     const right = document.createElement("div")
@@ -519,7 +527,7 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
       err.textContent = statsData.error
       root.appendChild(err)
     } else {
-      const sc = freeOnly ? statsData.free : statsData.all
+      const sc = statsData
 
       // Window table (clickable rows)
       const table = document.createElement("table")
@@ -532,8 +540,7 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
           <th style="font-weight:500;padding-bottom:6px;">Input</th>
           <th style="font-weight:500;padding-bottom:6px;">Output</th>
           <th style="font-weight:500;padding-bottom:6px;">Cache</th>
-          <th style="font-weight:500;padding-bottom:6px;">Total</th>
-          <th style="font-weight:500;padding:0 6px 6px 0;">Est. Saved</th>
+          <th style="font-weight:500;padding:0 6px 6px 0;">Total</th>
         </tr>
       `
       table.appendChild(thead)
@@ -571,8 +578,7 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
           <td style="color:var(--text-weak,rgba(255,255,255,0.6));">${fmtNum(b.inTok)}</td>
           <td style="color:var(--text-weak,rgba(255,255,255,0.6));">${fmtNum(b.outTok)}</td>
           <td style="color:var(--text-weak,rgba(255,255,255,0.6));">${fmtNum(b.cacheTok)}</td>
-          <td style="color:var(--text-strong,#fff);"><strong>${fmtNum(tot)}</strong></td>
-          <td style="padding:3px 6px 3px 0;border-radius:0 6px 6px 0;color:var(--icon-success-base,#4ade80);">${fmtSaved(b)}</td>
+          <td style="padding:3px 6px 3px 0;border-radius:0 6px 6px 0;color:var(--text-strong,#fff);"><strong>${fmtNum(tot)}</strong></td>
         `
         tbody.appendChild(tr)
       }
@@ -590,12 +596,12 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
       `
       root.appendChild(meta)
 
-      // Top Models for selected window
+      // Top Free Models for selected window
       const modelsWrap = document.createElement("div")
       modelsWrap.style.cssText = "display:flex;flex-direction:column;gap:5px;padding:0 6px;"
       const mTitle = document.createElement("div")
       mTitle.style.cssText = "color:var(--text-weak,rgba(255,255,255,0.5));font-size:12px;"
-      mTitle.textContent = `Top Models (${activeWin} · ${freeOnly ? "free" : "all"})`
+      mTitle.textContent = `Top Free Models (${activeWin})`
       modelsWrap.appendChild(mTitle)
 
       const list = sc.modelsByWin?.[activeWin] || []
@@ -920,7 +926,7 @@ exports.default = sdk.Plugin.define({
     ctx.add(sdk.Command, () => ({
       id: "stats",
       title: "UnlimitedCode: Usage Stats",
-      description: "Free-tier tokens, speed, savings & top models",
+      description: "OpenCode free-tier tokens, speed & top models since install",
       group: "UnlimitedCode",
       featured: true,
       suggested: true,

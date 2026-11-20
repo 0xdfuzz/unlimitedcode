@@ -71,7 +71,7 @@ func TestSourceHasContract(t *testing.T) {
 			t.Fatalf("server plugin source missing %q", want)
 		}
 	}
-	for _, want := range []string{`unlimited-stats`, `dialog.show`, `dialog.select`, `toast.show`, `Est. Saved`, `prompt.footer`} {
+	for _, want := range []string{`unlimited-stats`, `dialog.show`, `dialog.select`, `toast.show`, `Free Stats`, `prompt.footer`} {
 		if !bytes.Contains(TUISource, []byte(want)) {
 			t.Fatalf("tui plugin source missing %q", want)
 		}

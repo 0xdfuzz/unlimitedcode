@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"unlimitedcode/internal/config"
 )
@@ -15,6 +17,7 @@ func EnsureConfig(path string) (string, bool, error) {
 	if path == "" {
 		path = config.ConfigPath()
 	}
+	ensureInstalledAt(filepath.Dir(path))
 	if _, err := os.Stat(path); err == nil {
 		return path, false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -31,7 +34,22 @@ func EnsureConfig(path string) (string, bool, error) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return "", false, err
 	}
+	ensureInstalledAt(filepath.Dir(path))
 	return path, true, nil
+}
+
+// ensureInstalledAt writes a one-time Unix millisecond timestamp marking when
+// UnlimitedCode was first installed so /unlimited-stats only counts free-tier
+// tokens used after installation.
+func ensureInstalledAt(dir string) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	marker := filepath.Join(dir, "installed_at")
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+	_ = os.WriteFile(marker, []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)+"\n"), 0o600)
 }
 
 func opencodeConfigDir() (string, error) {

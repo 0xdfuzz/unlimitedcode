@@ -31,7 +31,7 @@ hosts (browser, `webfetch`, docs, localhost) pass through directly.
   quota.
 - **Native OpenCode TUI & Desktop UI + local token stats (`plugin/tui.tsx`, `plugin/gui-experimental.js`)**:
   - `/unlimited` — interactive control menu & MASQUE pool inspector (active IPv6, slots, recycles, pause/resume, rotate).
-  - `/unlimited-stats` (alias `/ustats`) — 100% local read-only token stats modal from `opencode.db` with `24h` / `7d` / `30d` / `All` window switching, `Free` vs `All` model filter, `Est. Saved`, Cache Hit %, per-model `tok/s`, streak, and peak hour (zero LLM turn, works without an OpenCode account).
+  - `/unlimited-stats` (alias `/ustats`) — 100% local read-only token stats modal from `opencode.db` for OpenCode free models since installation, with `24h` / `7d` / `30d` / `All` window switching, Cache Hit %, per-model `tok/s`, streak, and peak hour (zero LLM turn, works without an OpenCode account).
   - `/rotate` — immediate `0ms` egress IP rotation with native toast feedback.
   - Subtle clickable `unlimited` status indicator in both the TUI prompt footer and the Desktop session header.
 - **Split routing**: `opencode.ai` / `*.opencode.ai` always route fail-closed

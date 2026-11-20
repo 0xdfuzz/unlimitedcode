@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
@@ -9,11 +9,6 @@ const ROTATE_TIMEOUT_MS = 55_000
 
 const WINDOWS = ["24h", "7d", "30d", "All"] as const
 type WindowKey = (typeof WINDOWS)[number]
-
-// Mid-tier frontier API reference rates ($ per 1M tokens) for Est. Saved.
-const RATE_INPUT_PER_M = 0.5
-const RATE_OUTPUT_PER_M = 2.0
-const RATE_CACHE_PER_M = 0.05
 
 type Bucket = {
   inTok: number
@@ -29,18 +24,14 @@ type ModelAgg = {
   speedSec: number
 }
 
-type ScopeStats = {
+type FullStats = {
   buckets: Record<WindowKey, Bucket>
   byModel: Record<WindowKey, Map<string, ModelAgg>>
   cacheRatio: number
   avgTps: string
   streak: number
   peakHour: number
-}
-
-type FullStats = {
-  free: ScopeStats
-  all: ScopeStats
+  sinceLabel: string
   error?: string
 }
 
@@ -156,13 +147,28 @@ function fmtTurns(n: number): string {
   return n.toLocaleString("en-US")
 }
 
-function fmtSaved(b: Bucket): string {
-  const usd =
-    (b.inTok / 1_000_000) * RATE_INPUT_PER_M +
-    (b.outTok / 1_000_000) * RATE_OUTPUT_PER_M +
-    (b.cacheTok / 1_000_000) * RATE_CACHE_PER_M
-  if (usd < 0.01) return "~$0.00"
-  return "~$" + usd.toFixed(2)
+function installedSinceMs(): number {
+  const home = stateHome()
+  try {
+    const raw = readFileSync(join(home, "installed_at"), "utf8").trim()
+    const ts = Number(raw)
+    if (Number.isFinite(ts) && ts > 0) return ts
+  } catch {}
+  try {
+    const st = statSync(join(home, "config.json"))
+    if (st.birthtimeMs > 0) return Math.floor(st.birthtimeMs)
+    if (st.mtimeMs > 0) return Math.floor(st.mtimeMs)
+  } catch {}
+  return 0
+}
+
+function fmtSinceDate(ts: number): string {
+  if (!ts) return ""
+  try {
+    return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  } catch {
+    return ""
+  }
 }
 
 function padR(s: string, n: number): string {
@@ -182,13 +188,17 @@ function shortenIPv6(ip: string): string {
   return `${parts[0]}:${parts[1]}::${parts[parts.length - 2]}:${parts[parts.length - 1]}`
 }
 
-function isFreeEntry(parsed: any, modelId: string): boolean {
-  const low = modelId.toLowerCase()
-  if (low.endsWith("-free") || low.includes(":free") || low === "big-pickle") return true
-  if (typeof parsed?.cost === "number" && parsed.cost === 0) return true
-  if (typeof parsed?.cost?.total === "number" && parsed.cost.total === 0) return true
+// Strict OpenCode free-tier filter: only provider "opencode" models with zero cost.
+function isOpenCodeFree(parsed: any, modelId: string): boolean {
   const prov = String(parsed?.providerID || parsed?.model?.providerID || "").toLowerCase()
-  if (prov === "opencode" && !parsed?.cost) return true
+  if (prov && prov !== "opencode") return false
+  const low = modelId.toLowerCase()
+  if (low.endsWith("-free") || low === "big-pickle") return true
+  if (prov === "opencode") {
+    if (typeof parsed?.cost === "number") return parsed.cost === 0
+    if (typeof parsed?.cost?.total === "number") return parsed.cost.total === 0
+    if (!parsed?.cost) return true
+  }
   return false
 }
 
@@ -265,7 +275,7 @@ function addToScope(
   }
 }
 
-function finalizeScope(acc: ReturnType<typeof createScopeAcc>): ScopeStats {
+function finalizeScope(acc: ReturnType<typeof createScopeAcc>, sinceLabel: string): FullStats {
   const all = acc.buckets.All
   const cacheRatio =
     all.inTok + all.cacheTok > 0 ? Math.round((all.cacheTok / (all.inTok + all.cacheTok)) * 100) : 0
@@ -281,26 +291,31 @@ function finalizeScope(acc: ReturnType<typeof createScopeAcc>): ScopeStats {
     avgTps,
     streak: computeStreakDays(acc.activeDays),
     peakHour,
+    sinceLabel,
   }
 }
 
 async function loadTokenStats(): Promise<FullStats> {
-  const emptyFree = finalizeScope(createScopeAcc())
-  const emptyAll = finalizeScope(createScopeAcc())
+  const sinceMs = installedSinceMs()
+  const sinceLabel = fmtSinceDate(sinceMs)
+  const emptyStats = (error: string): FullStats => ({
+    ...finalizeScope(createScopeAcc(), sinceLabel),
+    error,
+  })
 
   const dataDir = process.env.XDG_DATA_HOME
     ? join(process.env.XDG_DATA_HOME, "opencode")
     : join(homedir(), ".local", "share", "opencode")
   const dbPath = join(dataDir, "opencode.db")
   if (!existsSync(dbPath)) {
-    return { free: emptyFree, all: emptyAll, error: "No local OpenCode database found yet." }
+    return emptyStats("No local OpenCode database found yet.")
   }
 
   try {
     const mod: any = await import("bun:sqlite")
     const Database = mod.Database || mod.default
     if (!Database) {
-      return { free: emptyFree, all: emptyAll, error: "bun:sqlite is unavailable in this runtime." }
+      return emptyStats("bun:sqlite is unavailable in this runtime.")
     }
 
     const db = new Database(dbPath, { readonly: true })
@@ -311,11 +326,10 @@ async function loadTokenStats(): Promise<FullStats> {
       const monthAgo = now - 30 * 86_400_000
 
       const rows = db
-        .query("SELECT time_created, data FROM session_message WHERE type = 'assistant'")
-        .all() as Array<{ time_created: number; data: string }>
+        .query("SELECT time_created, data FROM session_message WHERE type = 'assistant' AND time_created >= ?")
+        .all(sinceMs) as Array<{ time_created: number; data: string }>
 
       const freeAcc = createScopeAcc()
-      const allAcc = createScopeAcc()
 
       for (const row of rows) {
         let parsed: any
@@ -331,6 +345,9 @@ async function loadTokenStats(): Promise<FullStats> {
         const cache = Number(usage.cache?.read ?? usage.cacheRead ?? usage.cachedInputTokens ?? 0)
         if (inp + out + cache <= 0) continue
 
+        const mid = String(parsed?.model?.id || parsed?.modelID || "unknown")
+        if (!isOpenCodeFree(parsed, mid)) continue
+
         const windows: WindowKey[] = ["All"]
         if (row.time_created >= monthAgo) windows.push("30d")
         if (row.time_created >= weekAgo) windows.push("7d")
@@ -342,26 +359,23 @@ async function loadTokenStats(): Promise<FullStats> {
         const turnSpeedSec =
           out > 0 && completed > started && completed - started < 300_000 ? (completed - started) / 1000 : 0
 
-        const mid = String(parsed?.model?.id || parsed?.modelID || "unknown")
-        addToScope(allAcc, windows, inp, out, cache, mid, dt, turnSpeedSec)
-        if (isFreeEntry(parsed, mid)) {
-          addToScope(freeAcc, windows, inp, out, cache, mid, dt, turnSpeedSec)
-        }
+        addToScope(freeAcc, windows, inp, out, cache, mid, dt, turnSpeedSec)
       }
 
-      if (allAcc.buckets.All.turns === 0) {
-        return { free: emptyFree, all: emptyAll, error: "No token usage recorded in opencode.db yet." }
+      if (freeAcc.buckets.All.turns === 0) {
+        return emptyStats(
+          sinceLabel
+            ? `No OpenCode free-tier turns recorded since ${sinceLabel}.`
+            : "No OpenCode free-tier turns recorded yet.",
+        )
       }
 
-      return {
-        free: finalizeScope(freeAcc),
-        all: finalizeScope(allAcc),
-      }
+      return finalizeScope(freeAcc, sinceLabel)
     } finally {
       db.close()
     }
   } catch (err: any) {
-    return { free: emptyFree, all: emptyAll, error: `Failed to read local DB: ${err?.message || err}` }
+    return emptyStats(`Failed to read local DB: ${err?.message || err}`)
   }
 }
 
@@ -446,15 +460,13 @@ function themeColors(context: any) {
 
 function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any }) {
   const [winIdx, setWinIdx] = createSignal(3) // Default: All
-  const [freeOnly, setFreeOnly] = createSignal(props.stats.free.buckets.All.turns > 0)
 
   const activeWindow = createMemo(() => WINDOWS[winIdx()])
-  const scope = createMemo(() => (freeOnly() ? props.stats.free : props.stats.all))
 
   const topModels = createMemo(() => {
     const w = activeWindow()
-    const map = scope().byModel[w]
-    const b = scope().buckets[w]
+    const map = props.stats.byModel[w]
+    const b = props.stats.buckets[w]
     const grandTotal = Math.max(1, b.inTok + b.outTok + b.cacheTok)
     const entries = [...map.entries()].sort((a, b2) => b2[1].total - a[1].total).slice(0, 6)
     const maxTok = entries[0]?.[1].total || 1
@@ -483,14 +495,6 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
         group: "UnlimitedCode",
         run() {
           setWinIdx((i) => (i + 1) % WINDOWS.length)
-        },
-      },
-      {
-        bind: "f",
-        title: "Toggle Free / All models",
-        group: "UnlimitedCode",
-        run() {
-          setFreeOnly((v) => !v)
         },
       },
     ],
@@ -524,9 +528,8 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
         <box flexDirection="row" justifyContent="space-between" width="100%">
           <text fg={c().base}>
             <b>UnlimitedCode</b>
-            <span style={{ fg: c().muted }}>{" · Usage Stats  "}</span>
-            <span style={{ fg: freeOnly() ? c().accent : c().base }}>
-              {freeOnly() ? "[Free]" : "[All]"}
+            <span style={{ fg: c().muted }}>
+              {props.stats.sinceLabel ? ` · Free Stats (since ${props.stats.sinceLabel})` : " · Free Stats"}
             </span>
           </text>
           <box flexDirection="row" gap={1}>
@@ -551,31 +554,29 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
           <box flexDirection="row" justifyContent="space-between" width="100%">
             <text fg={c().muted}>{padR("Window", 10)}</text>
             <text fg={c().muted}>
-              {padL("Turns", 8) +
-                padL("Input", 10) +
-                padL("Output", 10) +
-                padL("Cache", 11) +
-                padL("Total", 11) +
-                padL("Est. Saved", 12)}
+              {padL("Turns", 9) +
+                padL("Input", 11) +
+                padL("Output", 11) +
+                padL("Cache", 12) +
+                padL("Total", 12)}
             </text>
           </box>
           <For each={tableRows}>
             {(row) => {
-              const b = () => scope().buckets[row.key]
+              const b = () => props.stats.buckets[row.key]
               const tot = () => b().inTok + b().outTok + b().cacheTok
               const selected = () => activeWindow() === row.key
               return (
                 <box flexDirection="row" justifyContent="space-between" width="100%">
                   <text fg={selected() ? c().accent : c().muted}>{padR(row.label, 10)}</text>
                   <text fg={c().base}>
-                    <span style={{ fg: c().base }}>{padL(fmtTurns(b().turns), 8)}</span>
-                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().inTok), 10)}</span>
-                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().outTok), 10)}</span>
-                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().cacheTok), 11)}</span>
+                    <span style={{ fg: c().base }}>{padL(fmtTurns(b().turns), 9)}</span>
+                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().inTok), 11)}</span>
+                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().outTok), 11)}</span>
+                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().cacheTok), 12)}</span>
                     <span style={{ fg: c().base }}>
-                      <b>{padL(fmtNum(tot()), 11)}</b>
+                      <b>{padL(fmtNum(tot()), 12)}</b>
                     </span>
-                    <span style={{ fg: c().ok }}>{padL(fmtSaved(b()), 12)}</span>
                   </text>
                 </box>
               )
@@ -586,13 +587,13 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
         <box flexDirection="row" justifyContent="space-between" width="100%">
           <text fg={c().muted}>
             {"Cache Hit "}
-            <span style={{ fg: c().base }}>{`${scope().cacheRatio}%`}</span>
+            <span style={{ fg: c().base }}>{`${props.stats.cacheRatio}%`}</span>
             {"  ·  Avg "}
-            <span style={{ fg: c().base }}>{`${scope().avgTps} tok/s`}</span>
+            <span style={{ fg: c().base }}>{`${props.stats.avgTps} tok/s`}</span>
             {"  ·  Streak "}
-            <span style={{ fg: c().base }}>{`${scope().streak}d`}</span>
+            <span style={{ fg: c().base }}>{`${props.stats.streak}d`}</span>
             {"  ·  Peak "}
-            <span style={{ fg: c().base }}>{`${String(scope().peakHour).padStart(2, "0")}:00`}</span>
+            <span style={{ fg: c().base }}>{`${String(props.stats.peakHour).padStart(2, "0")}:00`}</span>
           </text>
           <text fg={c().muted}>
             {"429s "}
@@ -601,7 +602,7 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
         </box>
 
         <box flexDirection="column" width="100%">
-          <text fg={c().muted}>{`Top Models (${activeWindow()} · ${freeOnly() ? "free" : "all"})`}</text>
+          <text fg={c().muted}>{`Top Free Models (${activeWindow()})`}</text>
           <Show
             when={topModels().length > 0}
             fallback={<text fg={c().muted}>{"No turns in this window."}</text>}
@@ -636,7 +637,7 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
             {" · burnt "}
             <span style={{ fg: proxyState().burnt > 0 ? c().err : c().base }}>{String(proxyState().burnt)}</span>
           </text>
-          <text fg={c().muted}>{"tab window · f scope"}</text>
+          <text fg={c().muted}>{"tab window"}</text>
         </box>
       </box>
     </box>
@@ -877,7 +878,7 @@ export default {
             {
               id: "unlimitedcode.stats",
               title: "UnlimitedCode Usage Stats",
-              description: "Free-tier tokens, speed, savings & top models",
+              description: "OpenCode free-tier tokens, speed & top models since install",
               group: "UnlimitedCode",
               slash: { name: "unlimited-stats", aliases: ["ustats"] },
               palette: true,
@@ -907,7 +908,7 @@ export default {
                     {
                       title: "Usage stats",
                       value: "stats",
-                      description: "Tokens, speed, savings & models",
+                      description: "Free tokens, speed & top models",
                     },
                     {
                       title: "Rotate egress IP",
