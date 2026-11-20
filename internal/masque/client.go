@@ -213,7 +213,10 @@ func cfRequest(ctx context.Context, method, rawURL, token string, payload any, o
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

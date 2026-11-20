@@ -33,10 +33,9 @@ func cmdInstall(args []string, interactive bool) {
 			fmt.Printf("UnlimitedCode v%s (installed)\n\n", version)
 			fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
 			fmt.Println("  [2] Status & Diagnostics")
-			fmt.Println("  [3] Uninstall (remove plugin & proxy)")
-			fmt.Println("  [4] Uninstall + Purge (remove everything)")
+			fmt.Println("  [3] Uninstall (remove everything)")
 			fmt.Println("  [0] Exit")
-			fmt.Print("\nChoose [1/2/3/4/0]: ")
+			fmt.Print("\nChoose [1/2/3/0]: ")
 			choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			fmt.Println()
 			switch strings.TrimSpace(choice) {
@@ -51,10 +50,6 @@ func cmdInstall(args []string, interactive bool) {
 				pauseIfWindows()
 				return
 			case "3":
-				cmdUninstall(nil)
-				pauseIfWindows()
-				return
-			case "4":
 				cmdUninstall([]string{"--purge"})
 				pauseIfWindows()
 				return

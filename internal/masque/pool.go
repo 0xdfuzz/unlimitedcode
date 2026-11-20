@@ -624,7 +624,10 @@ func lookupAAAA(ctx context.Context, host string) string {
 		return ""
 	}
 	req.Header.Set("Accept", "application/dns-json")
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""

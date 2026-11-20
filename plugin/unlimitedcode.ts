@@ -119,10 +119,16 @@ async function ensureDaemonRunning(): Promise<boolean> {
   const bin = installedBinary()
   if (!existsSync(bin)) return false
   try {
+    const childEnv = { ...process.env }
+    delete childEnv.HTTPS_PROXY
+    delete childEnv.HTTP_PROXY
+    delete childEnv.https_proxy
+    delete childEnv.http_proxy
     const child = spawn(bin, ["daemon", "--parent-pid", String(process.pid)], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
+      env: childEnv,
     })
     child.unref()
   } catch {
