@@ -1,0 +1,43 @@
+{
+  "listen": "127.0.0.1:42987",
+  "control": "127.0.0.1:42988",
+  "allow": [
+    "opencode.ai",
+    "*.opencode.ai"
+  ],
+  "allow_ports": [
+    443
+  ],
+  "egress": {
+    "mode": "usque",
+    "pool_size": 2,
+    "warp_proxy": "http://127.0.0.1:40000",
+    "upstream": "",
+    "direct_fallback": false
+  },
+  "hop": {
+    "enabled": true,
+    "warp_cli": "",
+    "timeout_seconds": 45,
+    "failure_cooldown_seconds": 5,
+    "max_per_hour": 30,
+    "max_per_day": 300
+  },
+  "observer": {
+    "enabled": true,
+    "log_path": "",
+    "poll_seconds": 2,
+    "dedup_seconds": 60,
+    "plugin_grace_seconds": 15
+  },
+  "resume": {
+    "enabled": false,
+    "binary": "",
+    "timeout_seconds": 300
+  },
+  "limits": {
+    "max_tunnels": 128,
+    "idle_timeout_seconds": 300,
+    "dial_timeout_seconds": 10
+  }
+}

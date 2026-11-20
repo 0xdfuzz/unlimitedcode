@@ -1,0 +1,24 @@
+# Binaries
+kestrel
+kestrel.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test / coverage / temp
+*.test
+*.out
+coverage.txt
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Local state & secrets
+config.json
+control.token
+observer.json
+path-backup.json
+slot-*.json
+logs/
+dist/
