@@ -387,17 +387,9 @@ async function formatStatusReport(): Promise<string> {
   return lines.join("\n")
 }
 
-async function sendNotice(ctx: any, sessionID: string, text: string): Promise<void> {
-  if (typeof ctx?.session?.synthetic === "function" && sessionID) {
-    try {
-      await ctx.session.synthetic({
-        sessionID,
-        text,
-        metadata: { source: "unlimitedcode" },
-      })
-      return
-    } catch {}
-  }
+// Returning via a rejected command error displays the message in OpenCode's
+// TUI/Desktop without triggering an LLM turn (same pattern as OpenCode's /goal).
+async function showOutput(text: string): Promise<never> {
   throw new Error(text)
 }
 
@@ -459,19 +451,17 @@ async function setup(ctx: any): Promise<void> {
             const st = await controlCall("/status")
             const ip = st?.pool?.active_ip || "?"
             const msg = res?.status === "ok"
-              ? `● Rotated in **${res.duration_ms ?? 0}ms** → \`${ip}\``
+              ? `● Rotated in ${res.duration_ms ?? 0}ms → ${ip}`
               : `Rotate failed: ${res?.error || "daemon unreachable"}`
-            await sendNotice(ctx, sid, msg)
+            await showOutput(msg)
           },
         })
 
         editor.add({
           name: "unlimited-stats",
           description: "show local OpenCode token usage, speed, streak, and model breakdown",
-          execute: async (input: any) => {
-            const sid = String(input?.sessionID ?? "")
-            const report = await formatTokenStatsReport()
-            await sendNotice(ctx, sid, report)
+          execute: async () => {
+            await showOutput(await formatTokenStatsReport())
           },
         })
 
@@ -482,20 +472,17 @@ async function setup(ctx: any): Promise<void> {
             const sid = String(input?.sessionID ?? "")
             const arg = String(input?.prompt?.text ?? "").trim().toLowerCase()
             if (arg === "stats") {
-              await sendNotice(ctx, sid, await formatTokenStatsReport())
-              return
+              await showOutput(await formatTokenStatsReport())
             }
             if (arg === "pause") {
               localPaused = true
               await controlCall("/pause", "POST", { paused: true })
-              await sendNotice(ctx, sid, "⏸ UnlimitedCode auto-rotate **paused**. Use `/unlimited resume` to re-enable.")
-              return
+              await showOutput("⏸ UnlimitedCode auto-rotate paused. Use /unlimited resume to re-enable.")
             }
             if (arg === "resume") {
               localPaused = false
               await controlCall("/pause", "POST", { paused: false })
-              await sendNotice(ctx, sid, "● UnlimitedCode auto-rotate **resumed**.")
-              return
+              await showOutput("● UnlimitedCode auto-rotate resumed.")
             }
             if (arg === "rotate") {
               if (sid) rotateSessionAlias(sid)
@@ -503,12 +490,11 @@ async function setup(ctx: any): Promise<void> {
               const st = await controlCall("/status")
               const ip = st?.pool?.active_ip || "?"
               const msg = res?.status === "ok"
-                ? `● Rotated in **${res.duration_ms ?? 0}ms** → \`${ip}\``
+                ? `● Rotated in ${res.duration_ms ?? 0}ms → ${ip}`
                 : `Rotate failed: ${res?.error || "daemon unreachable"}`
-              await sendNotice(ctx, sid, msg)
-              return
+              await showOutput(msg)
             }
-            await sendNotice(ctx, sid, await formatStatusReport())
+            await showOutput(await formatStatusReport())
           },
         })
       })
