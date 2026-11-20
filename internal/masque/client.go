@@ -358,8 +358,8 @@ func newL4Client(cfg slotConfig) (*l4Client, error) {
 		tlsConfig: tlsCfg,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
-			KeepAlivePeriod: 30 * time.Second,
-			MaxIdleTimeout:  2 * time.Minute,
+			KeepAlivePeriod: 15 * time.Second,
+			MaxIdleTimeout:  5 * time.Minute,
 		},
 		endpoint: &net.UDPAddr{IP: ip, Port: defaultMASQUEPort},
 	}, nil
