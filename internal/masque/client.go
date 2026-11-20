@@ -368,7 +368,17 @@ func newL4Client(cfg slotConfig) (*l4Client, error) {
 func (c *l4Client) DialContext(ctx context.Context, target string) (net.Conn, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		conn, err := c.dialOnce(ctx, target)
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if attempt == 0 {
+			if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > 5*time.Second {
+				attemptCtx, cancel = context.WithTimeout(ctx, 4*time.Second)
+			}
+		}
+		conn, err := c.dialOnce(attemptCtx, target)
+		if cancel != nil {
+			cancel()
+		}
 		if err == nil {
 			return conn, nil
 		}
@@ -387,9 +397,7 @@ func (c *l4Client) dialOnce(ctx context.Context, target string) (net.Conn, error
 	}
 	stream, err := h3.OpenRequestStream(ctx)
 	if err != nil {
-		if ctx.Err() == nil {
-			c.resetConn(h3)
-		}
+		c.resetConn(h3)
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+target, nil)
@@ -400,14 +408,17 @@ func (c *l4Client) dialOnce(ctx context.Context, target string) (net.Conn, error
 	req.Host = target
 	if err := stream.SendRequestHeader(req); err != nil {
 		_ = stream.Close()
-		if ctx.Err() == nil {
-			c.resetConn(h3)
-		}
+		c.resetConn(h3)
 		return nil, err
 	}
 	resp, err := stream.ReadResponse()
 	if err != nil {
 		_ = stream.Close()
+		// A blackholed UDP socket (e.g. after toggling a system VPN or Wi-Fi)
+		// passes OpenRequestStream/SendRequestHeader in memory and only fails
+		// here when waiting for response headers. Reset the cached QUIC conn so
+		// the immediate retry opens a fresh UDP socket on the active route.
+		c.resetConn(h3)
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -428,12 +439,28 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		return nil, nil, net.ErrClosed
 	}
 	if c.clientConn != nil {
-		h3 := c.clientConn
-		addr := c.udpConn.LocalAddr()
+		if c.quicConn != nil && c.quicConn.Context().Err() == nil {
+			h3 := c.clientConn
+			addr := c.udpConn.LocalAddr()
+			c.mu.Unlock()
+			return h3, addr, nil
+		}
+		// Underlying QUIC session already died; clean it up before dialing.
+		qc := c.quicConn
+		uc := c.udpConn
+		c.clientConn = nil
+		c.quicConn = nil
+		c.udpConn = nil
 		c.mu.Unlock()
-		return h3, addr, nil
+		if qc != nil {
+			_ = qc.CloseWithError(0, "stale")
+		}
+		if uc != nil {
+			_ = uc.Close()
+		}
+	} else {
+		c.mu.Unlock()
 	}
-	c.mu.Unlock()
 
 	bindIP := net.IPv4zero
 	if c.endpoint.IP.To4() == nil {
