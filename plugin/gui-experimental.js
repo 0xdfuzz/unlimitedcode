@@ -280,8 +280,21 @@ const DOT_SVG =
 
 function buildStatsElement(statsData, summary, dialog, actions) {
   const root = document.createElement("div")
-  root.style.cssText =
-    "padding:20px 24px;min-width:560px;max-width:680px;font-family:var(--font-mono,ui-monospace,monospace);font-size:13px;color:var(--text-base,#e5e5e5);display:flex;flex-direction:column;gap:14px;"
+  root.style.cssText = [
+    "background:var(--surface-raised-stronger-non-alpha,var(--background-stronger,#141417))",
+    "border:1px solid var(--border-weak-base,rgba(255,255,255,0.12))",
+    "border-radius:12px",
+    "box-shadow:0 24px 64px rgba(0,0,0,0.65)",
+    "padding:20px 24px",
+    "width:640px",
+    "max-width:calc(100vw - 48px)",
+    "font-family:var(--font-mono,ui-monospace,monospace)",
+    "font-size:13px",
+    "color:var(--text-base,#e5e5e5)",
+    "display:flex",
+    "flex-direction:column",
+    "gap:14px",
+  ].join(";")
 
   let freeOnly = Boolean(statsData?.free?.buckets?.All?.turns > 0)
 
@@ -553,53 +566,48 @@ exports.default = sdk.Plugin.define({
       )
     }
 
-    ctx.add(sdk.ComposerPill, {
-      id: "status",
-      order: 50,
-      show() {
-        const s = summary()
-        const tone = !s.online ? "danger" : s.paused ? "warning" : "success"
-        const stateLabel = !s.online ? "OFFLINE" : s.paused ? "PAUSED" : "AUTO"
-        return {
-          label: "unlimited",
-          tone,
-          title: `UnlimitedCode · ${stateLabel}`,
-          rows: [
-            {
-              id: "stats",
-              label: "Usage stats",
-              detail: "tokens & savings",
-              run() {
-                void openStatsDialog()
-              },
-            },
-            {
-              id: "egress",
-              label: "Egress IP",
-              detail: s.online ? `${s.ip} (${s.ready}/${s.total})` : "offline",
-              tone,
-            },
-            {
-              id: "counters",
-              label: "Rotations",
-              detail: `${s.rotations} · burnt ${s.burnt}`,
-            },
-            {
-              id: "rotate",
-              label: "Rotate egress IP now",
-              run() {
-                void runRotate()
-              },
-            },
-            {
-              id: "pause",
-              label: s.paused ? "Resume auto-rotate" : "Pause auto-rotate",
-              run() {
-                void togglePause()
-              },
-            },
-          ],
+    ctx.add(sdk.Slot, {
+      at: "session.header",
+      order: 10,
+      render() {
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.style.cssText = [
+          "background:transparent",
+          "border:none",
+          "padding:2px 8px",
+          "border-radius:6px",
+          "cursor:pointer",
+          "font-family:var(--font-sans,system-ui,sans-serif)",
+          "font-size:12px",
+          "font-weight:500",
+          "letter-spacing:0.01em",
+          "transition:background 120ms ease,opacity 120ms ease",
+        ].join(";")
+
+        const paint = () => {
+          const s = summary()
+          const color = !s.online ? "#f87171" : s.paused ? "#fbbf24" : "#4ade80"
+          const stLabel = !s.online ? "OFFLINE" : s.paused ? "PAUSED" : "AUTO"
+          btn.textContent = "unlimited"
+          btn.style.color = color
+          btn.title = `UnlimitedCode · ${stLabel} · ${s.ip} · rot ${s.rotations}`
         }
+
+        btn.onmouseenter = () => {
+          btn.style.background = "rgba(255,255,255,0.06)"
+        }
+        btn.onmouseleave = () => {
+          btn.style.background = "transparent"
+        }
+        btn.onclick = () => {
+          void openStatsDialog()
+        }
+
+        paint()
+        const sync = setInterval(paint, 3000)
+        onCleanup(() => clearInterval(sync))
+        return btn
       },
     })
 

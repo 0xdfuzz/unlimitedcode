@@ -749,7 +749,6 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
       onMouseUp={() => props.onClick()}
     >
       <text fg={labelColor()} wrapMode="none">
-        <span style={{ fg: theme().text.muted }}>{"· "}</span>
         {"unlimited"}
       </text>
     </box>

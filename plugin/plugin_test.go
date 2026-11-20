@@ -76,7 +76,7 @@ func TestSourceHasContract(t *testing.T) {
 			t.Fatalf("tui plugin source missing %q", want)
 		}
 	}
-	for _, want := range []string{`ComposerPill`, `unlimitedcode.daemon`, `Rotate egress IP`} {
+	for _, want := range []string{`session.header`, `unlimitedcode.daemon`, `Rotate Egress IP`} {
 		if !bytes.Contains(GUISource, []byte(want)) {
 			t.Fatalf("gui plugin source missing %q", want)
 		}
