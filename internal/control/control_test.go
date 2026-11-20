@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"kestrel/internal/control"
-	"kestrel/internal/rotate"
-	"kestrel/internal/proxy"
+	"unlimitedcode/internal/control"
+	"unlimitedcode/internal/rotate"
+	"unlimitedcode/internal/proxy"
 )
 
 const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

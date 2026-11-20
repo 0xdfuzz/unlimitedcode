@@ -114,26 +114,26 @@ func Default() Config {
 }
 
 func Home() string {
-	if v := os.Getenv("KESTREL_HOME"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_HOME"); v != "" {
 		return v
 	}
 	if runtime.GOOS == "windows" {
 		if v := os.Getenv("LOCALAPPDATA"); v != "" {
-			return filepath.Join(v, "Kestrel")
+			return filepath.Join(v, "UnlimitedCode")
 		}
 	}
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
-		return filepath.Join(v, "kestrel")
+		return filepath.Join(v, "UnlimitedCode")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".kestrel"
+		return ".UnlimitedCode"
 	}
-	return filepath.Join(home, ".local", "state", "kestrel")
+	return filepath.Join(home, ".local", "state", "UnlimitedCode")
 }
 
 func ConfigPath() string { return filepath.Join(Home(), "config.json") }
-func LogPath() string    { return filepath.Join(Home(), "logs", "kestrel.log") }
+func LogPath() string    { return filepath.Join(Home(), "logs", "unlimitedcode.log") }
 func TokenPath() string  { return filepath.Join(Home(), "control.token") }
 func MasqueDir() string  { return filepath.Join(Home(), "masque") }
 
@@ -169,108 +169,108 @@ func Load(path string) (Config, error) {
 }
 
 func applyEnv(c *Config) {
-	if v := os.Getenv("KESTREL_LISTEN"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_LISTEN"); v != "" {
 		c.Listen = v
 	}
-	if v := os.Getenv("KESTREL_CONTROL"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_CONTROL"); v != "" {
 		c.Control = v
 	}
-	if v := os.Getenv("KESTREL_ALLOW"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_ALLOW"); v != "" {
 		c.Allow = splitList(v)
 	}
-	if v := os.Getenv("KESTREL_ALLOW_PORTS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_ALLOW_PORTS"); v != "" {
 		if ports, err := parsePorts(v); err == nil {
 			c.AllowPorts = ports
 		}
 	}
-	if v := os.Getenv("KESTREL_EGRESS_MODE"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_EGRESS_MODE"); v != "" {
 		c.Egress.Mode = v
 	}
-	if v := os.Getenv("KESTREL_UPSTREAM"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_UPSTREAM"); v != "" {
 		c.Egress.Upstream = v
 	}
-	if v := os.Getenv("KESTREL_DIRECT_FALLBACK"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_DIRECT_FALLBACK"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Egress.DirectFallback = b
 		}
 	}
-	if v := os.Getenv("KESTREL_POOL_SIZE"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_POOL_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Egress.PoolSize = n
 		}
 	}
-	if v := os.Getenv("KESTREL_MAX_TUNNELS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_MAX_TUNNELS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Limits.MaxTunnels = n
 		}
 	}
-	if v := os.Getenv("KESTREL_IDLE_TIMEOUT_SECONDS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_IDLE_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Limits.IdleTimeoutSeconds = n
 		}
 	}
-	if v := os.Getenv("KESTREL_DIAL_TIMEOUT_SECONDS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_DIAL_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Limits.DialTimeoutSeconds = n
 		}
 	}
-	if v := envFirst("KESTREL_ROTATE_ENABLED", "KESTREL_HOP_ENABLED"); v != "" {
+	if v := envFirst("UNLIMITEDCODE_ROTATE_ENABLED", "UNLIMITEDCODE_HOP_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Rotate.Enabled = b
 		}
 	}
-	if v := envFirst("KESTREL_ROTATE_TIMEOUT_SECONDS", "KESTREL_HOP_TIMEOUT_SECONDS"); v != "" {
+	if v := envFirst("UNLIMITEDCODE_ROTATE_TIMEOUT_SECONDS", "UNLIMITEDCODE_HOP_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Rotate.TimeoutSeconds = n
 		}
 	}
-	if v := envFirst("KESTREL_ROTATE_FAILURE_COOLDOWN_SECONDS", "KESTREL_HOP_FAILURE_COOLDOWN_SECONDS"); v != "" {
+	if v := envFirst("UNLIMITEDCODE_ROTATE_FAILURE_COOLDOWN_SECONDS", "UNLIMITEDCODE_HOP_FAILURE_COOLDOWN_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Rotate.FailureCooldownSecs = n
 		}
 	}
-	if v := envFirst("KESTREL_ROTATE_MAX_PER_HOUR", "KESTREL_HOP_MAX_PER_HOUR"); v != "" {
+	if v := envFirst("UNLIMITEDCODE_ROTATE_MAX_PER_HOUR", "UNLIMITEDCODE_HOP_MAX_PER_HOUR"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Rotate.MaxPerHour = n
 		}
 	}
-	if v := envFirst("KESTREL_ROTATE_MAX_PER_DAY", "KESTREL_HOP_MAX_PER_DAY"); v != "" {
+	if v := envFirst("UNLIMITEDCODE_ROTATE_MAX_PER_DAY", "UNLIMITEDCODE_HOP_MAX_PER_DAY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Rotate.MaxPerDay = n
 		}
 	}
-	if v := os.Getenv("KESTREL_OBSERVER_ENABLED"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Observer.Enabled = b
 		}
 	}
-	if v := os.Getenv("KESTREL_OBSERVER_LOG_PATH"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_LOG_PATH"); v != "" {
 		c.Observer.LogPath = v
 	}
-	if v := os.Getenv("KESTREL_OBSERVER_POLL_SECONDS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_POLL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Observer.PollSeconds = n
 		}
 	}
-	if v := os.Getenv("KESTREL_OBSERVER_DEDUP_SECONDS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_DEDUP_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Observer.DedupSeconds = n
 		}
 	}
-	if v := os.Getenv("KESTREL_OBSERVER_PLUGIN_GRACE_SECONDS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_PLUGIN_GRACE_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Observer.PluginGraceSeconds = n
 		}
 	}
-	if v := os.Getenv("KESTREL_RESUME_ENABLED"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_RESUME_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Resume.Enabled = b
 		}
 	}
-	if v := os.Getenv("KESTREL_RESUME_BINARY"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_RESUME_BINARY"); v != "" {
 		c.Resume.Binary = v
 	}
-	if v := os.Getenv("KESTREL_RESUME_TIMEOUT_SECONDS"); v != "" {
+	if v := os.Getenv("UNLIMITEDCODE_RESUME_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Resume.TimeoutSeconds = n
 		}

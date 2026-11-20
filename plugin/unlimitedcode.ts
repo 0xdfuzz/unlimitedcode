@@ -5,7 +5,7 @@ import { join } from "node:path"
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const MAX_ATTEMPTS = 4
-const HOP_TIMEOUT_MS = 55_000
+const ROTATE_TIMEOUT_MS = 55_000
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 const sessionAliases = new Map<string, string>()
@@ -77,21 +77,21 @@ function applySessionAlias(headers: Record<string, string> | Headers, sessionID:
 }
 
 function stateHome(): string {
-  if (process.env.KESTREL_HOME) return process.env.KESTREL_HOME
+  if (process.env.UNLIMITEDCODE_HOME) return process.env.UNLIMITEDCODE_HOME
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    return join(process.env.LOCALAPPDATA, "Kestrel")
+    return join(process.env.LOCALAPPDATA, "UnlimitedCode")
   }
-  if (process.env.XDG_STATE_HOME) return join(process.env.XDG_STATE_HOME, "kestrel")
-  return join(homedir(), ".local", "state", "kestrel")
+  if (process.env.XDG_STATE_HOME) return join(process.env.XDG_STATE_HOME, "unlimitedcode")
+  return join(homedir(), ".local", "state", "unlimitedcode")
 }
 
 function installedBinary(): string {
-  const name = process.platform === "win32" ? "kestrel.exe" : "kestrel"
+  const name = process.platform === "win32" ? "unlimitedcode.exe" : "unlimitedcode"
   return join(stateHome(), name)
 }
 
 function controlURL(): string {
-  const raw = process.env.KESTREL_CONTROL || DEFAULT_CONTROL
+  const raw = process.env.UNLIMITEDCODE_CONTROL || DEFAULT_CONTROL
   return raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
 }
 
@@ -112,8 +112,8 @@ async function isDaemonHealthy(): Promise<boolean> {
   }
 }
 
-// Start kestrel daemon on demand tied to this OpenCode process PID so it exits
-// automatically when OpenCode closes (no logon autostart required).
+// Launch the local daemon tied to this OpenCode PID so it exits automatically
+// when OpenCode closes.
 async function ensureDaemonRunning(): Promise<boolean> {
   if (await isDaemonHealthy()) return true
   const bin = installedBinary()
@@ -185,41 +185,80 @@ async function requestRotate(event: any): Promise<{ retry: boolean; delay: numbe
       agent: nameOf(event?.agent),
       attempt,
     },
-    HOP_TIMEOUT_MS,
+    ROTATE_TIMEOUT_MS,
   )
   if (result?.status === "ok") return { retry: true, delay: 0 }
   return null
 }
 
 function fmtNum(n: number): string {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + "B"
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M"
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "k"
-  return String(n)
+  return String(Math.round(n))
 }
 
-async function readLocalTokenStats(): Promise<string> {
+function bar(fraction: number, width = 12): string {
+  const clamped = Math.max(0, Math.min(1, fraction))
+  const filled = Math.round(clamped * width)
+  return "█".repeat(filled) + "░".repeat(width - filled)
+}
+
+function computeStreakDays(dayKeys: Set<string>): number {
+  let streak = 0
+  const cursor = new Date()
+  for (let i = 0; i < 365; i++) {
+    const key = cursor.toISOString().slice(0, 10)
+    if (dayKeys.has(key)) {
+      streak++
+    } else if (i > 0) {
+      break
+    }
+    cursor.setDate(cursor.getDate() - 1)
+  }
+  return streak
+}
+
+async function formatTokenStatsReport(): Promise<string> {
   const dataDir = process.env.XDG_DATA_HOME
     ? join(process.env.XDG_DATA_HOME, "opencode")
     : join(homedir(), ".local", "share", "opencode")
   const dbPath = join(dataDir, "opencode.db")
-  if (!existsSync(dbPath)) return ""
+  if (!existsSync(dbPath)) {
+    return "### UnlimitedCode Stats\n\nNo local OpenCode database found yet."
+  }
 
   try {
     const mod: any = await import("bun:sqlite")
     const Database = mod.Database || mod.default
-    if (!Database) return ""
+    if (!Database) return "### UnlimitedCode Stats\n\n`bun:sqlite` is unavailable in this runtime."
+
     const db = new Database(dbPath, { readonly: true })
     try {
       const now = Date.now()
       const dayAgo = now - 86_400_000
       const weekAgo = now - 7 * 86_400_000
+      const monthAgo = now - 30 * 86_400_000
+
       const rows = db
         .query("SELECT time_created, data FROM session_message WHERE type = 'assistant'")
         .all() as Array<{ time_created: number; data: string }>
 
-      let totalIn = 0, totalOut = 0, totalCache = 0, totalMsgs = 0
-      let dayTok = 0, weekTok = 0
-      const byModel = new Map<string, number>()
+      type Bucket = { inTok: number; outTok: number; cacheTok: number; turns: number }
+      const empty = (): Bucket => ({ inTok: 0, outTok: 0, cacheTok: 0, turns: 0 })
+      const b24 = empty(), b7 = empty(), b30 = empty(), bAll = empty()
+      const byModel = new Map<string, { total: number; turns: number }>()
+      const activeDays = new Set<string>()
+      const hourCounts = new Array<number>(24).fill(0)
+      let speedTok = 0
+      let speedSec = 0
+
+      const add = (b: Bucket, i: number, o: number, c: number) => {
+        b.inTok += i
+        b.outTok += o
+        b.cacheTok += c
+        b.turns++
+      }
 
       for (const row of rows) {
         let parsed: any
@@ -233,65 +272,112 @@ async function readLocalTokenStats(): Promise<string> {
         const inp = Number(usage.input ?? usage.inputTokens ?? usage.promptTokens ?? 0)
         const out = Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0)
         const cache = Number(usage.cache?.read ?? usage.cacheRead ?? usage.cachedInputTokens ?? 0)
-        const sum = inp + out
-        if (sum <= 0 && cache <= 0) continue
+        const total = inp + out + cache
+        if (total <= 0) continue
 
-        totalMsgs++
-        totalIn += inp
-        totalOut += out
-        totalCache += cache
-        if (row.time_created >= dayAgo) dayTok += sum + cache
-        if (row.time_created >= weekAgo) weekTok += sum + cache
+        add(bAll, inp, out, cache)
+        if (row.time_created >= dayAgo) add(b24, inp, out, cache)
+        if (row.time_created >= weekAgo) add(b7, inp, out, cache)
+        if (row.time_created >= monthAgo) add(b30, inp, out, cache)
+
+        const dt = new Date(row.time_created)
+        activeDays.add(dt.toISOString().slice(0, 10))
+        hourCounts[dt.getHours()]++
+
+        const started = Number(parsed?.time?.created ?? 0)
+        const completed = Number(parsed?.time?.completed ?? 0)
+        if (out > 0 && completed > started && completed - started < 300_000) {
+          speedTok += out
+          speedSec += (completed - started) / 1000
+        }
 
         const mid = String(parsed?.model?.id || parsed?.modelID || "unknown")
-        byModel.set(mid, (byModel.get(mid) || 0) + sum + cache)
+        const prev = byModel.get(mid) || { total: 0, turns: 0 }
+        prev.total += total
+        prev.turns++
+        byModel.set(mid, prev)
       }
 
-      if (totalMsgs === 0) return ""
-      const top = [...byModel.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 3)
-        .map(([m, t]) => `${m} (${fmtNum(t)})`)
-        .join(", ")
+      if (bAll.turns === 0) {
+        return "### UnlimitedCode Stats\n\nNo token usage recorded in `opencode.db` yet."
+      }
+
+      const rowLine = (label: string, b: Bucket) => {
+        const tot = b.inTok + b.outTok + b.cacheTok
+        return `| ${label} | ${b.turns} | ${fmtNum(b.inTok)} | ${fmtNum(b.outTok)} | ${fmtNum(b.cacheTok)} | **${fmtNum(tot)}** |`
+      }
+
+      const cacheRatio = bAll.inTok + bAll.cacheTok > 0
+        ? Math.round((bAll.cacheTok / (bAll.inTok + bAll.cacheTok)) * 100)
+        : 0
+      const avgTps = speedSec > 0 ? (speedTok / speedSec).toFixed(1) : "—"
+      const streak = computeStreakDays(activeDays)
+      let peakHour = 0
+      for (let h = 1; h < 24; h++) {
+        if (hourCounts[h] > hourCounts[peakHour]) peakHour = h
+      }
+
+      const models = [...byModel.entries()].sort((a, b) => b[1].total - a[1].total).slice(0, 6)
+      const maxModelTok = models[0]?.[1].total || 1
+      const modelLines = models.map(([name, info]) => {
+        const pct = Math.round((info.total / (bAll.inTok + bAll.outTok + bAll.cacheTok)) * 100)
+        return `| \`${name}\` | ${bar(info.total / maxModelTok)} ${pct}% | ${fmtNum(info.total)} | ${info.turns} |`
+      })
+
+      const status = await controlCall("/status")
+      const rotSummary = status
+        ? `Rotations this session: **${status.hop?.count ?? 0}** · Active IP: \`${status.pool?.active_ip || "?"}\``
+        : "Daemon offline"
 
       return [
-        `Tokens (local DB, ${totalMsgs} turns):`,
-        `  24h: ${fmtNum(dayTok)} · 7d: ${fmtNum(weekTok)} · Total: ${fmtNum(totalIn + totalOut + totalCache)} (in ${fmtNum(totalIn)} / out ${fmtNum(totalOut)} / cache ${fmtNum(totalCache)})`,
-        top ? `  Top models: ${top}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n")
+        "### UnlimitedCode — Local Usage Stats",
+        "",
+        "| Window | Turns | Input | Output | Cache Read | Total |",
+        "|---|---:|---:|---:|---:|---:|",
+        rowLine("24h", b24),
+        rowLine("7d", b7),
+        rowLine("30d", b30),
+        rowLine("All time", bAll),
+        "",
+        `**Cache Hit:** ${cacheRatio}% · **Avg Speed:** ${avgTps} tok/s · **Streak:** ${streak}d · **Peak Hour:** ${String(peakHour).padStart(2, "0")}:00`,
+        "",
+        "| Model | Share | Tokens | Turns |",
+        "|---|---|---:|---:|",
+        ...modelLines,
+        "",
+        rotSummary,
+      ].join("\n")
     } finally {
       db.close()
     }
-  } catch {
-    return ""
+  } catch (err: any) {
+    return `### UnlimitedCode Stats\n\nFailed to read local DB: ${err?.message || err}`
   }
 }
 
 async function formatStatusReport(): Promise<string> {
   const status = await controlCall("/status")
   if (!status) {
-    return "Kestrel daemon is not reachable on " + controlURL()
+    return "### UnlimitedCode\n\nDaemon is not reachable on `" + controlURL() + "`."
   }
-  const lines: string[] = []
   const paused = Boolean(status.hop?.paused || localPaused)
-  lines.push(`Kestrel ${status.version} · auto-rotate: ${paused ? "PAUSED" : "ON"} · egress: ${status.egress?.mode}`)
-  if (status.pool) {
-    lines.push(`Active IP: ${status.pool.active_ip || "?"} (slot-${status.pool.active_slot}, burnt today: ${status.pool.burnt_count})`)
-    for (const sl of status.pool.slots || []) {
-      const mark = sl.active ? "*" : " "
-      lines.push(`  ${mark} slot-${sl.id} [${sl.state}] ${sl.ip || "-"} (${sl.colo || "-"}) recycles=${sl.recycles}`)
+  const badge = paused ? "⏸ PAUSED" : "● AUTO"
+  const lines: string[] = [
+    `### UnlimitedCode \`v${status.version}\` — ${badge}`,
+    "",
+    `**Egress:** \`${status.egress?.mode}\` · **Active IP:** \`${status.pool?.active_ip || "?"}\` · **Rotations:** ${status.hop?.count ?? 0} · **Burnt today:** ${status.pool?.burnt_count ?? 0}`,
+  ]
+  if (status.pool?.slots?.length) {
+    lines.push("")
+    lines.push("| Slot | State | IPv6 /64 Egress | PoP | Recycles |")
+    lines.push("|---|---|---|---|---:|")
+    for (const sl of status.pool.slots) {
+      const icon = sl.active ? "● active" : sl.state === "ready" ? "○ warm" : `◌ ${sl.state}`
+      lines.push(`| slot-${sl.id} | ${icon} | \`${sl.ip || "-"}\` | ${sl.colo || "-"} | ${sl.recycles} |`)
     }
   }
-  lines.push(`Rotations: ${status.hop?.count ?? 0} (failed=${status.hop?.failures ?? 0}) · Tunnels: ${status.proxy?.total ?? 0}`)
-  const tokenStats = await readLocalTokenStats()
-  if (tokenStats) {
-    lines.push("")
-    lines.push(tokenStats)
-  }
   lines.push("")
-  lines.push("Commands: /kestrel [status|rotate|pause|resume] · /rotate")
+  lines.push("Commands: `/unlimited [status|rotate|pause|resume]` · `/unlimited-stats` · `/rotate`")
   return lines.join("\n")
 }
 
@@ -301,18 +387,15 @@ async function sendNotice(ctx: any, sessionID: string, text: string): Promise<vo
       await ctx.session.synthetic({
         sessionID,
         text,
-        metadata: { source: "kestrel" },
+        metadata: { source: "unlimitedcode" },
       })
       return
-    } catch {
-      // fall through
-    }
+    } catch {}
   }
   throw new Error(text)
 }
 
 async function setup(ctx: any): Promise<void> {
-  // Launch the local daemon on demand if not already running (non-blocking for fast startup).
   void ensureDaemonRunning()
 
   if (typeof ctx?.session?.hook === "function") {
@@ -342,7 +425,6 @@ async function setup(ctx: any): Promise<void> {
       const attempt = Number(event?.attempt ?? 1)
       if (attempt > MAX_ATTEMPTS) return { retry: false, delay: 0 }
 
-      // First free-limit hit: rotate the wire session ID without burning the current IP.
       if (sid && attempt <= 2) {
         rotateSessionAlias(sid)
         const decision = { retry: true, delay: 0 }
@@ -350,7 +432,6 @@ async function setup(ctx: any): Promise<void> {
         return decision
       }
 
-      // Subsequent hit: rotate session alias + request a 0ms MASQUE pool swap.
       if (sid) rotateSessionAlias(sid)
       const decision = await requestRotate(event)
       if (!decision) return { retry: false, delay: 0 }
@@ -364,51 +445,64 @@ async function setup(ctx: any): Promise<void> {
       await ctx.command.transform((editor: any) => {
         editor.add({
           name: "rotate",
-          description: "rotate Kestrel egress IP and session alias immediately",
+          description: "rotate UnlimitedCode egress IP and session alias immediately",
           execute: async (input: any) => {
             const sid = String(input?.sessionID ?? "")
             if (sid) rotateSessionAlias(sid)
-            const res = await controlCall("/rotate", "POST", {}, HOP_TIMEOUT_MS)
+            const res = await controlCall("/rotate", "POST", {}, ROTATE_TIMEOUT_MS)
             const st = await controlCall("/status")
             const ip = st?.pool?.active_ip || "?"
             const msg = res?.status === "ok"
-              ? `Kestrel rotated in ${res.duration_ms ?? 0}ms -> ${ip}`
-              : `Kestrel rotate failed: ${res?.error || "daemon unreachable"}`
+              ? `● Rotated in **${res.duration_ms ?? 0}ms** → \`${ip}\``
+              : `Rotate failed: ${res?.error || "daemon unreachable"}`
             await sendNotice(ctx, sid, msg)
           },
         })
 
         editor.add({
-          name: "kestrel",
-          description: "show Kestrel status & local token stats [status|rotate|pause|resume]",
+          name: "unlimited-stats",
+          description: "show local OpenCode token usage, speed, streak, and model breakdown",
+          execute: async (input: any) => {
+            const sid = String(input?.sessionID ?? "")
+            const report = await formatTokenStatsReport()
+            await sendNotice(ctx, sid, report)
+          },
+        })
+
+        editor.add({
+          name: "unlimited",
+          description: "UnlimitedCode status & controls [status|rotate|pause|resume|stats]",
           execute: async (input: any) => {
             const sid = String(input?.sessionID ?? "")
             const arg = String(input?.prompt?.text ?? "").trim().toLowerCase()
+            if (arg === "stats") {
+              await sendNotice(ctx, sid, await formatTokenStatsReport())
+              return
+            }
             if (arg === "pause") {
               localPaused = true
               await controlCall("/pause", "POST", { paused: true })
-              await sendNotice(ctx, sid, "Kestrel auto-rotate paused. Use `/kestrel resume` to re-enable.")
+              await sendNotice(ctx, sid, "⏸ UnlimitedCode auto-rotate **paused**. Use `/unlimited resume` to re-enable.")
               return
             }
             if (arg === "resume") {
               localPaused = false
               await controlCall("/pause", "POST", { paused: false })
-              await sendNotice(ctx, sid, "Kestrel auto-rotate resumed.")
+              await sendNotice(ctx, sid, "● UnlimitedCode auto-rotate **resumed**.")
               return
             }
             if (arg === "rotate") {
               if (sid) rotateSessionAlias(sid)
-              const res = await controlCall("/rotate", "POST", {}, HOP_TIMEOUT_MS)
+              const res = await controlCall("/rotate", "POST", {}, ROTATE_TIMEOUT_MS)
               const st = await controlCall("/status")
               const ip = st?.pool?.active_ip || "?"
               const msg = res?.status === "ok"
-                ? `Kestrel rotated in ${res.duration_ms ?? 0}ms -> ${ip}`
-                : `Kestrel rotate failed: ${res?.error || "daemon unreachable"}`
+                ? `● Rotated in **${res.duration_ms ?? 0}ms** → \`${ip}\``
+                : `Rotate failed: ${res?.error || "daemon unreachable"}`
               await sendNotice(ctx, sid, msg)
               return
             }
-            const report = await formatStatusReport()
-            await sendNotice(ctx, sid, report)
+            await sendNotice(ctx, sid, await formatStatusReport())
           },
         })
       })
@@ -417,6 +511,6 @@ async function setup(ctx: any): Promise<void> {
 }
 
 export default {
-  id: "kestrel",
+  id: "unlimitedcode",
   setup,
 }

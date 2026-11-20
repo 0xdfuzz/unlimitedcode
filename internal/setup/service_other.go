@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"kestrel/internal/config"
+	"unlimitedcode/internal/config"
 )
 
 func InstalledPath() string {
-	return filepath.Join(config.Home(), "kestrel")
+	return filepath.Join(config.Home(), "UnlimitedCode")
 }
 
 func CopyBinary(self, dest string) error {
@@ -24,7 +24,7 @@ func CopyBinary(self, dest string) error {
 		return err
 	}
 	defer src.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".kestrel-*")
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".UnlimitedCode-*")
 	if err != nil {
 		return err
 	}

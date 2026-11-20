@@ -98,9 +98,9 @@ func TestRejectsUnknownField(t *testing.T) {
 }
 
 func TestEnvOverride(t *testing.T) {
-	t.Setenv("KESTREL_ALLOW", "example.com,*.example.net")
-	t.Setenv("KESTREL_ALLOW_PORTS", "443,8443")
-	t.Setenv("KESTREL_EGRESS_MODE", "direct")
+	t.Setenv("UNLIMITEDCODE_ALLOW", "example.com,*.example.net")
+	t.Setenv("UNLIMITEDCODE_ALLOW_PORTS", "443,8443")
+	t.Setenv("UNLIMITEDCODE_EGRESS_MODE", "direct")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -146,11 +146,11 @@ func TestRotateConfig(t *testing.T) {
 }
 
 func TestRotateEnvOverride(t *testing.T) {
-	t.Setenv("KESTREL_ROTATE_ENABLED", "false")
-	t.Setenv("KESTREL_ROTATE_TIMEOUT_SECONDS", "20")
-	t.Setenv("KESTREL_ROTATE_FAILURE_COOLDOWN_SECONDS", "1")
-	t.Setenv("KESTREL_ROTATE_MAX_PER_HOUR", "5")
-	t.Setenv("KESTREL_ROTATE_MAX_PER_DAY", "50")
+	t.Setenv("UNLIMITEDCODE_ROTATE_ENABLED", "false")
+	t.Setenv("UNLIMITEDCODE_ROTATE_TIMEOUT_SECONDS", "20")
+	t.Setenv("UNLIMITEDCODE_ROTATE_FAILURE_COOLDOWN_SECONDS", "1")
+	t.Setenv("UNLIMITEDCODE_ROTATE_MAX_PER_HOUR", "5")
+	t.Setenv("UNLIMITEDCODE_ROTATE_MAX_PER_DAY", "50")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {

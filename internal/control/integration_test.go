@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"kestrel/internal/control"
-	"kestrel/internal/rotate"
-	"kestrel/internal/proxy"
-	"kestrel/internal/upstream"
+	"unlimitedcode/internal/control"
+	"unlimitedcode/internal/rotate"
+	"unlimitedcode/internal/proxy"
+	"unlimitedcode/internal/upstream"
 )
 
 type testEcho struct {

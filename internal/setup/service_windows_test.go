@@ -11,7 +11,7 @@ import (
 func TestCopyBinary(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.exe")
-	dest := filepath.Join(dir, "dest", "kestrel.exe")
+	dest := filepath.Join(dir, "dest", "unlimitedcode.exe")
 	want := []byte("binary-content")
 	if err := os.WriteFile(src, want, 0o600); err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestCopyBinary(t *testing.T) {
 
 func TestInstallAutostart(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("KESTREL_HOME", filepath.Join(root, "home"))
+	t.Setenv("UNLIMITEDCODE_HOME", filepath.Join(root, "home"))
 	t.Setenv("APPDATA", filepath.Join(root, "appdata"))
 	self, err := os.Executable()
 	if err != nil {

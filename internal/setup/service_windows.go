@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"kestrel/internal/config"
+	"unlimitedcode/internal/config"
 )
 
 const (
@@ -22,7 +22,7 @@ const (
 
 // InstalledPath is where setup keeps a stable copy of the binary for autostart.
 func InstalledPath() string {
-	return filepath.Join(config.Home(), "kestrel.exe")
+	return filepath.Join(config.Home(), "unlimitedcode.exe")
 }
 
 // CopyBinary installs a copy of self at dest using an atomic rename.
@@ -44,7 +44,7 @@ func InstallAutostart(self string) (string, error) {
 	if err := os.MkdirAll(startup, 0o700); err != nil {
 		return "", err
 	}
-	vbs := filepath.Join(startup, "Kestrel.vbs")
+	vbs := filepath.Join(startup, "UnlimitedCode.vbs")
 	if err := os.WriteFile(vbs, []byte(launcherVBS(dest)), 0o600); err != nil {
 		return "", err
 	}
@@ -53,7 +53,7 @@ func InstallAutostart(self string) (string, error) {
 
 // RemoveAutostart deletes the logon launcher. The installed binary stays.
 func RemoveAutostart() (string, error) {
-	vbs := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Kestrel.vbs")
+	vbs := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "UnlimitedCode.vbs")
 	if err := os.Remove(vbs); err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -86,7 +86,7 @@ func copyBinary(self, dest string) error {
 	}
 	defer src.Close()
 
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".kestrel-*.exe")
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".UnlimitedCode-*.exe")
 	if err != nil {
 		return err
 	}

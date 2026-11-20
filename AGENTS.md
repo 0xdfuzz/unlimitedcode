@@ -1,9 +1,9 @@
 # AGENTS.md
 
-Engineering rules and architecture contract for **Kestrel**.
+Engineering rules and architecture contract for **UnlimitedCode**.
 
 ## 1. Package Map
-- `cmd/kestrel/`: CLI entrypoint split by command (`main.go`, `daemon.go`, `setup.go`, `status.go`, `run.go`).
+- `cmd/unlimitedcode/`: CLI entrypoint split by command (`main.go`, `daemon.go`, `setup.go`, `status.go`, `run.go`).
 - `internal/masque/`: in-process Cloudflare WARP MASQUE L4 client (`client.go`) and warm rotation pool (`pool.go`) with IPv6-first DoH resolution and burned-prefix tracking.
 - `internal/proxy/`: transparent HTTP `CONNECT` proxy with split routing (routed hosts via MASQUE egress, other hosts via direct passthrough when enabled) and pause/close gate for clean rotation.
 - `internal/rotate/`: single-flight rotation coordinator with failure cooldown and rolling hourly/daily budgets.
@@ -11,13 +11,13 @@ Engineering rules and architecture contract for **Kestrel**.
 - `internal/config/`: JSON config loading, defaults, env overrides, and validation.
 - `internal/observer/`: OpenCode service log tail fallback when the plugin is absent.
 - `internal/resume/`: opt-in `opencode run --session <id> continue` fallback.
-- `internal/setup/`: first-run config creation, Windows logon autostart (`Kestrel.vbs`), and optional `openhop` PATH takeover/restore.
+- `internal/setup/`: first-run config creation, Windows logon autostart (`UnlimitedCode.vbs`), and optional `openhop` PATH takeover/restore.
 - `internal/doctor/`: environment and connectivity diagnostics.
 - `internal/opencode/`: official OpenCode binary and log locator.
 - `internal/upstream/`: `Dialer` interface and `direct` / `http-connect` implementations.
 - `internal/activity/`: plugin/observer cross-suppression timestamp tracker.
 - `internal/logx/`: rotating file logger.
-- `plugin/`: embedded OpenCode Plugin V2 (`kestrel.ts`) and installer (`plugin.go`).
+- `plugin/`: embedded OpenCode Plugin V2 (`unlimitedcode.ts`) and installer (`plugin.go`).
 
 ## 2. Go Style & Minimalism
 - **Stdlib first:** only `github.com/quic-go/quic-go` is used outside Go's standard library (for HTTP/3 MASQUE).
@@ -41,9 +41,9 @@ Engineering rules and architecture contract for **Kestrel**.
 - Use atomic writes (write `.tmp` -> close -> `os.Rename`) for configs and state files.
 
 ## 6. Verification Before Merging
-Always run from `kestrel/`:
+Always run from `UnlimitedCode/`:
 ```sh
 go vet ./...
 go test -race ./...
-go build -trimpath -ldflags "-s -w" -o kestrel.exe ./cmd/kestrel
+go build -trimpath -ldflags "-s -w" -o unlimitedcode.exe ./cmd/unlimitedcode
 ```

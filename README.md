@@ -1,27 +1,27 @@
-# Kestrel
+# UnlimitedCode
 
 Single-binary local egress daemon for the official OpenCode client. One Go
 executable, embedded in-process Cloudflare WARP MASQUE pool, zero external
 binaries, zero `app.asar` patches, zero database writes, no PATH shims.
 
-Kestrel exposes a loopback HTTP `CONNECT` proxy: `opencode.ai` traffic is
+UnlimitedCode exposes a loopback HTTP `CONNECT` proxy: `opencode.ai` traffic is
 forwarded over in-process HTTP/3 MASQUE tunnels (`quic-go`), while other hosts
 (browser/webfetch/docs) pass through directly. OpenCode keeps full ownership of
-TLS, headers, prompts, and the free-tier gate; Kestrel rotates wire session IDs
+TLS, headers, prompts, and the free-tier gate; UnlimitedCode rotates wire session IDs
 on per-session limits and swaps warm IPv6 `/64` egress slots in `0ms` when an
 IP hits quota.
 
 ## Highlights
 
-- **Single binary (`kestrel`, ~9.5 MB)**: embedded MASQUE L4 client
+- **Single binary (`UnlimitedCode`, ~9.5 MB)**: embedded MASQUE L4 client
   (`internal/masque`) with only `quic-go` outside Go's standard library. No
   `warp-cli`, no `warp-svc`, no TUN driver, no admin rights.
 - **Instant (`0ms`) egress rotation**: keeps a warm pool (default 2 slots) on
   distinct IPv6 `/64` prefixes (IPv6-first via OS DNS + Cloudflare DoH). On
-  rotation, Kestrel swaps immediately to a warm slot and recycles the burned
+  rotation, UnlimitedCode swaps immediately to a warm slot and recycles the burned
   slot asynchronously via key re-enrollment, blacklisting burned `/64` prefixes
   until the daily `01:05 UTC` reset.
-- **Session-first retry plugin (`plugin/kestrel.ts`)**: on the first
+- **Session-first retry plugin (`plugin/unlimitedcode.ts`)**: on the first
   `provider.free-limit` 429, rotates the wire `ses_...` header in place via
   OpenCode's Plugin V2 hooks (`model.request` / `http.request`) without burning
   a clean egress IP or losing the current chat. Only requests an egress
@@ -39,48 +39,48 @@ Requires Go 1.25 or newer.
 ```sh
 go vet ./...
 go test ./...
-go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o kestrel.exe ./cmd/kestrel
+go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o unlimitedcode.exe ./cmd/unlimitedcode
 ```
 
 ## Quick Start
 
 ```sh
 # Write default config, install the OpenCode plugin, configure proxy env & autostart (Windows)
-kestrel setup --service --proxy
+UnlimitedCode setup --service --proxy
 
 # Verify health & active pool slots
-kestrel doctor
-kestrel status
+UnlimitedCode doctor
+UnlimitedCode status
 
 # Trigger a manual 0ms rotation
-kestrel rotate
+UnlimitedCode rotate
 ```
 
 Coming from an existing `openhop` shim on Windows:
 
 ```sh
-kestrel setup --takeover --service --proxy
+UnlimitedCode setup --takeover --service --proxy
 ```
 
 ## Commands
 
 ```text
-kestrel daemon   [flags]        run the proxy, MASQUE pool and control server
-kestrel status   [flags] [--json]
-kestrel doctor   [flags]        verify config, ports, egress, plugin and opencode
-kestrel setup    [flags]        write config, install plugin, optional service/proxy
-kestrel rotate   [flags] [--json]
-kestrel env      [flags] [--format plain|powershell|json]
-kestrel plugin   install|uninstall|path [--dir DIR]
-kestrel run      [flags] -- <command> [args...]
-kestrel version
+UnlimitedCode daemon   [flags]        run the proxy, MASQUE pool and control server
+UnlimitedCode status   [flags] [--json]
+UnlimitedCode doctor   [flags]        verify config, ports, egress, plugin and opencode
+UnlimitedCode setup    [flags]        write config, install plugin, optional service/proxy
+UnlimitedCode rotate   [flags] [--json]
+UnlimitedCode env      [flags] [--format plain|powershell|json]
+UnlimitedCode plugin   install|uninstall|path [--dir DIR]
+UnlimitedCode run      [flags] -- <command> [args...]
+UnlimitedCode version
 ```
 
 ## Configuration
 
 State directory:
-- **Windows:** `%LOCALAPPDATA%\Kestrel`
-- **Linux/macOS:** `$XDG_STATE_HOME/kestrel` or `~/.local/state/kestrel`
+- **Windows:** `%LOCALAPPDATA%\UnlimitedCode`
+- **Linux/macOS:** `$XDG_STATE_HOME/UnlimitedCode` or `~/.local/state/UnlimitedCode`
 
 Key settings (`config.json`, see [config.example.json](config.example.json)):
 - `egress.mode`: `masque` (default, embedded WARP MASQUE pool), `http-connect`, or `direct`.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"kestrel/internal/config"
+	"unlimitedcode/internal/config"
 )
 
 func TestStripOpenhop(t *testing.T) {
@@ -41,8 +41,8 @@ func TestStripOpenhopKeepsSibling(t *testing.T) {
 }
 
 func TestLauncherVBS(t *testing.T) {
-	got := launcherVBS(`C:\Users\demo\Kestrel\kestrel.exe`)
-	if !strings.Contains(got, `"""C:\Users\demo\Kestrel\kestrel.exe"" daemon"`) {
+	got := launcherVBS(`C:\Users\demo\UnlimitedCode\unlimitedcode.exe`)
+	if !strings.Contains(got, `"""C:\Users\demo\UnlimitedCode\unlimitedcode.exe"" daemon"`) {
 		t.Fatalf("bad command: %q", got)
 	}
 	if !strings.Contains(got, ", 0, False") {
@@ -51,7 +51,7 @@ func TestLauncherVBS(t *testing.T) {
 }
 
 func TestEnsureConfigCreates(t *testing.T) {
-	t.Setenv("KESTREL_HOME", t.TempDir())
+	t.Setenv("UNLIMITEDCODE_HOME", t.TempDir())
 	path := config.ConfigPath()
 	got, created, err := EnsureConfig(path)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestEnsureConfigCreates(t *testing.T) {
 }
 
 func TestEnsureConfigDoesNotOverwrite(t *testing.T) {
-	t.Setenv("KESTREL_HOME", t.TempDir())
+	t.Setenv("UNLIMITEDCODE_HOME", t.TempDir())
 	path := config.ConfigPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)

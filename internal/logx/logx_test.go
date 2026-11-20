@@ -7,7 +7,7 @@ import (
 )
 
 func TestRotation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "kestrel.log")
+	path := filepath.Join(t.TempDir(), "unlimitedcode.log")
 	logger, err := New(path, 80, 2, false)
 	if err != nil {
 		t.Fatal(err)

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"kestrel/internal/config"
+	"unlimitedcode/internal/config"
 )
 
 // EnsureConfig writes the default config when none exists. It never overwrites

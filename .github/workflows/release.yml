@@ -38,10 +38,10 @@ jobs:
           mkdir -p dist
           VERSION="${GITHUB_REF_NAME#v}"
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
-            -o "dist/kestrel_${VERSION}_${GOOS}_${GOARCH}${EXT}" ./cmd/kestrel
+            -o "dist/UNLIMITEDCODE_${VERSION}_${GOOS}_${GOARCH}${EXT}" ./cmd/unlimitedcode
       - uses: actions/upload-artifact@v4
         with:
-          name: kestrel-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: UnlimitedCode-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
 
   publish:

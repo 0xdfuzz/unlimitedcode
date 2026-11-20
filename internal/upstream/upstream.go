@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"kestrel/internal/config"
+	"unlimitedcode/internal/config"
 )
 
 // Dialer opens a tunnel to addr (host:port) through some egress.

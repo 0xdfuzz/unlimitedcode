@@ -9,17 +9,17 @@ import (
 	"syscall"
 	"time"
 
-	"kestrel/internal/activity"
-	"kestrel/internal/config"
-	"kestrel/internal/control"
-	"kestrel/internal/rotate"
-	"kestrel/internal/logx"
-	"kestrel/internal/observer"
-	"kestrel/internal/opencode"
-	"kestrel/internal/proxy"
-	"kestrel/internal/resume"
-	"kestrel/internal/upstream"
-	"kestrel/internal/masque"
+	"unlimitedcode/internal/activity"
+	"unlimitedcode/internal/config"
+	"unlimitedcode/internal/control"
+	"unlimitedcode/internal/rotate"
+	"unlimitedcode/internal/logx"
+	"unlimitedcode/internal/observer"
+	"unlimitedcode/internal/opencode"
+	"unlimitedcode/internal/proxy"
+	"unlimitedcode/internal/resume"
+	"unlimitedcode/internal/upstream"
+	"unlimitedcode/internal/masque"
 )
 
 func cmdDaemon(args []string) {
@@ -54,7 +54,7 @@ func cmdDaemon(args []string) {
 	if _, err := os.Stat(cfg.Path); os.IsNotExist(err) {
 		configState = "defaults"
 	}
-	logger.Printf("kestrel %s starting config=%s (%s) listen=%s control=%s egress=%s upstream=%s",
+	logger.Printf("UnlimitedCode %s starting config=%s (%s) listen=%s control=%s egress=%s upstream=%s",
 		version, cfg.Path, configState, cfg.Listen, cfg.Control, cfg.Egress.Mode, cfg.UpstreamName())
 
 	var (
@@ -272,7 +272,7 @@ func cmdDaemon(args []string) {
 	defer cancel()
 	p.Close(shutdownCtx)
 	c.Close(shutdownCtx)
-	logger.Printf("kestrel stopped")
+	logger.Printf("UnlimitedCode stopped")
 }
 
 func handleQuota(rotator *rotate.Manager, resumer *resume.Manager, logger *logx.Logger, session string) {

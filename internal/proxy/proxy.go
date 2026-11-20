@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"kestrel/internal/config"
-	"kestrel/internal/upstream"
+	"unlimitedcode/internal/config"
+	"unlimitedcode/internal/upstream"
 )
 
 type Logger interface {

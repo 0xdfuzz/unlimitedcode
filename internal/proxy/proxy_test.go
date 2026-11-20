@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"kestrel/internal/proxy"
-	"kestrel/internal/upstream"
+	"unlimitedcode/internal/proxy"
+	"unlimitedcode/internal/upstream"
 )
 
 func echoServer(t *testing.T) (addr string, port int) {

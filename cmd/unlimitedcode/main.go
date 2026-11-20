@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"kestrel/internal/config"
+	"unlimitedcode/internal/config"
 )
 
 var version = "0.2.0-dev"
@@ -43,27 +43,27 @@ func main() {
 	case "help", "-h", "--help":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "kestrel: unknown command %q\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "UnlimitedCode: unknown command %q\n", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `kestrel - local egress daemon for official OpenCode
+	fmt.Fprint(os.Stderr, `UnlimitedCode - local egress daemon for official OpenCode
 
 usage:
-  kestrel install   [flags]       install plugin & proxy for OpenCode (default when run with no args)
-  kestrel uninstall [--purge]     remove plugin, proxy env, and optionally state
-  kestrel daemon    [flags]       run the proxy, MASQUE pool and control server
-  kestrel status    [flags]       show daemon status
-  kestrel doctor    [flags]       check config, ports, egress, plugin and opencode
-  kestrel rotate    [flags]       request one egress rotation (alias: hop)
-  kestrel setup     [flags]       advanced setup (--takeover, --service, --dry-run)
-  kestrel env       [flags]       print proxy environment variables
-  kestrel plugin    install|uninstall|path
-  kestrel run       [flags] -- <command> [args...]
-  kestrel version
+  UnlimitedCode install   [flags]       install plugin & proxy for OpenCode (default when run with no args)
+  UnlimitedCode uninstall [--purge]     remove plugin, proxy env, and optionally state
+  UnlimitedCode daemon    [flags]       run the proxy, MASQUE pool and control server
+  UnlimitedCode status    [flags]       show daemon status
+  UnlimitedCode doctor    [flags]       check config, ports, egress, plugin and opencode
+  UnlimitedCode rotate    [flags]       request one egress rotation (alias: hop)
+  UnlimitedCode setup     [flags]       advanced setup (--takeover, --service, --dry-run)
+  UnlimitedCode env       [flags]       print proxy environment variables
+  UnlimitedCode plugin    install|uninstall|path
+  UnlimitedCode run       [flags] -- <command> [args...]
+  UnlimitedCode version
 
 common flags:
   --config PATH                   config file (default: state home)
@@ -116,7 +116,7 @@ func addOverrides(fs *flag.FlagSet, o *overrides) {
 func (o *overrides) load(fs *flag.FlagSet) (config.Config, error) {
 	path := o.configPath
 	if path == "" {
-		path = os.Getenv("KESTREL_CONFIG")
+		path = os.Getenv("UNLIMITEDCODE_CONFIG")
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -205,6 +205,6 @@ func humanBytes(n int64) string {
 }
 
 func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "kestrel: %v\n", err)
+	fmt.Fprintf(os.Stderr, "UnlimitedCode: %v\n", err)
 	os.Exit(1)
 }

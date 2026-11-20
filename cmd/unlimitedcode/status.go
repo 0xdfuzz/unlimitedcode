@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"kestrel/internal/config"
-	"kestrel/internal/control"
-	"kestrel/internal/doctor"
-	"kestrel/internal/rotate"
+	"unlimitedcode/internal/config"
+	"unlimitedcode/internal/control"
+	"unlimitedcode/internal/doctor"
+	"unlimitedcode/internal/rotate"
 )
 
 func cmdStatus(args []string) {
@@ -67,7 +67,7 @@ func cmdStatus(args []string) {
 		fatal(err)
 	}
 	uptime := (time.Duration(status.UptimeSeconds) * time.Second).Round(time.Second)
-	fmt.Printf("kestrel %s  up %s\n", status.Version, uptime)
+	fmt.Printf("UnlimitedCode %s  up %s\n", status.Version, uptime)
 	fmt.Printf("proxy    %s\n", control.URL(status.Listen))
 	fmt.Printf("control  %s\n", control.URL(status.Control))
 	fmt.Printf("egress   %s -> %s\n", status.Egress.Mode, status.Egress.Upstream)

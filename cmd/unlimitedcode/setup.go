@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"kestrel/internal/opencode"
-	"kestrel/internal/setup"
-	"kestrel/plugin"
+	"unlimitedcode/internal/opencode"
+	"unlimitedcode/internal/setup"
+	"unlimitedcode/plugin"
 )
 
 func cmdSetup(args []string) {
@@ -24,7 +24,7 @@ func cmdSetup(args []string) {
 	takeover := fs.Bool("takeover", false, "remove openhop from the user PATH and logon")
 	restore := fs.Bool("restore", false, "restore the PATH and logon value saved by --takeover")
 	service := fs.Bool("service", false, "install logon autostart and start the daemon")
-	proxyFlag := fs.Bool("proxy", false, "store the Kestrel proxy in the OpenCode service env")
+	proxyFlag := fs.Bool("proxy", false, "store the UnlimitedCode proxy in the OpenCode service env")
 	fs.Parse(args)
 	if *takeover && *restore {
 		fatal(errors.New("--takeover and --restore cannot be combined"))
@@ -181,7 +181,7 @@ func cmdSetup(args []string) {
 		}
 	}
 	if !*dry {
-		fmt.Println("next      kestrel doctor")
+		fmt.Println("next      UnlimitedCode doctor")
 	}
 }
 

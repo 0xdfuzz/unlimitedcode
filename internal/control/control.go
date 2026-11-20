@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"kestrel/internal/activity"
-	"kestrel/internal/rotate"
-	"kestrel/internal/observer"
-	"kestrel/internal/proxy"
-	"kestrel/internal/resume"
-	"kestrel/internal/masque"
+	"unlimitedcode/internal/activity"
+	"unlimitedcode/internal/rotate"
+	"unlimitedcode/internal/observer"
+	"unlimitedcode/internal/proxy"
+	"unlimitedcode/internal/resume"
+	"unlimitedcode/internal/masque"
 )
 
 type Logger interface {

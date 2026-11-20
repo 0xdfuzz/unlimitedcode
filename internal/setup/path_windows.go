@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"kestrel/internal/config"
-	"kestrel/internal/opencode"
+	"unlimitedcode/internal/config"
+	"unlimitedcode/internal/opencode"
 )
 
 const (
@@ -33,7 +33,7 @@ func UserPath() (string, error) {
 }
 
 func SetUserPath(value string) error {
-	_, err := powershellWithEnv("[Environment]::SetEnvironmentVariable('Path', $env:KESTREL_NEW_VALUE, 'User')", value)
+	_, err := powershellWithEnv("[Environment]::SetEnvironmentVariable('Path', $env:UNLIMITEDCODE_NEW_VALUE, 'User')", value)
 	return err
 }
 
@@ -145,7 +145,7 @@ func removeRun() error {
 }
 
 func restoreRun(value string) error {
-	_, err := powershellWithEnv(`New-ItemProperty -Path '`+runKey+`' -Name `+runName+` -PropertyType String -Value $env:KESTREL_NEW_VALUE -Force | Out-Null`, value)
+	_, err := powershellWithEnv(`New-ItemProperty -Path '`+runKey+`' -Name `+runName+` -PropertyType String -Value $env:UNLIMITEDCODE_NEW_VALUE -Force | Out-Null`, value)
 	return err
 }
 
@@ -156,7 +156,7 @@ func powershell(script string) (string, error) {
 
 func powershellWithEnv(script, value string) (string, error) {
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
-	cmd.Env = append(os.Environ(), "KESTREL_NEW_VALUE="+value)
+	cmd.Env = append(os.Environ(), "UNLIMITEDCODE_NEW_VALUE="+value)
 	out, err := cmd.Output()
 	return string(out), err
 }

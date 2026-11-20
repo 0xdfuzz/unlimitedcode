@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"strings"
 
-	"kestrel/internal/opencode"
-	"kestrel/plugin"
+	"unlimitedcode/internal/opencode"
+	"unlimitedcode/plugin"
 )
 
 func cmdEnv(args []string) {
@@ -92,7 +92,7 @@ func cmdRun(args []string) {
 		command = command[1:]
 	}
 	if len(command) == 0 {
-		fatal(fmt.Errorf("run: provide a command, e.g. kestrel run -- opencode"))
+		fatal(fmt.Errorf("run: provide a command, e.g. UnlimitedCode run -- opencode"))
 	}
 
 	cfg, err := o.load(fs)

@@ -289,7 +289,7 @@ func buildTLSConfig(cfg slotConfig) (*tls.Config, error) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "kestrel"},
+		Subject:      pkix.Name{CommonName: "UnlimitedCode"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

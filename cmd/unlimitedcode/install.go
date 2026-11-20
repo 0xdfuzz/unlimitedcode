@@ -10,26 +10,26 @@ import (
 	"runtime"
 	"strings"
 
-	"kestrel/internal/config"
-	"kestrel/internal/opencode"
-	"kestrel/internal/setup"
-	"kestrel/plugin"
+	"unlimitedcode/internal/config"
+	"unlimitedcode/internal/opencode"
+	"unlimitedcode/internal/setup"
+	"unlimitedcode/plugin"
 )
 
 // cmdInstall performs a zero-config plugin-first installation:
-//   1. Copies the kestrel binary to the state home (so the plugin can launch it on demand).
+//   1. Copies the UnlimitedCode binary to the state home (so the plugin can launch it on demand).
 //   2. Writes default config.json if missing.
-//   3. Installs the embedded OpenCode plugin (which auto-starts kestrel with --parent-pid).
+//   3. Installs the embedded OpenCode plugin (which auto-starts UnlimitedCode with --parent-pid).
 //   4. Stores HTTPS_PROXY/HTTP_PROXY/NO_PROXY in the OpenCode service env.
 func cmdInstall(args []string, interactive bool) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	o := &overrides{}
 	addConfigFlag(fs, o)
-	autostart := fs.Bool("autostart", false, "also install OS logon autostart (optional; plugin starts kestrel on demand by default)")
+	autostart := fs.Bool("autostart", false, "also install OS logon autostart (optional; plugin starts UnlimitedCode on demand by default)")
 	fs.Parse(args)
 
 	if interactive && isAlreadyInstalled() {
-		fmt.Printf("Kestrel %s is already installed.\n\n", version)
+		fmt.Printf("UnlimitedCode %s is already installed.\n\n", version)
 		fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
 		fmt.Println("  [2] Uninstall (remove plugin & proxy)")
 		fmt.Println("  [3] Uninstall + Purge (remove everything)")
@@ -114,7 +114,7 @@ func cmdInstall(args []string, interactive bool) {
 	}
 
 	fmt.Println()
-	fmt.Println("Kestrel installed successfully. Open OpenCode and use /kestrel or /rotate.")
+	fmt.Println("UnlimitedCode installed successfully. Open OpenCode and use /UnlimitedCode or /rotate.")
 	if interactive {
 		pauseIfWindows()
 	}
@@ -141,7 +141,7 @@ func pauseIfWindows() {
 
 func cmdUninstall(args []string) {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	purge := fs.Bool("purge", false, "also delete Kestrel state directory (config, logs, MASQUE slot keys)")
+	purge := fs.Bool("purge", false, "also delete UnlimitedCode state directory (config, logs, MASQUE slot keys)")
 	fs.Parse(args)
 
 	if err := plugin.Uninstall(""); err != nil {
@@ -171,5 +171,5 @@ func cmdUninstall(args []string) {
 		}
 	}
 
-	fmt.Println("Kestrel uninstalled.")
+	fmt.Println("UnlimitedCode uninstalled.")
 }

@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 )
 
-//go:embed kestrel.ts
+//go:embed unlimitedcode.ts
 var Source []byte
 
-const Filename = "kestrel.ts"
+const Filename = "unlimitedcode.ts"
 
 // Dir is the global OpenCode plugin directory. OpenCode follows
 // XDG_CONFIG_HOME when it is set and falls back to ~/.config.

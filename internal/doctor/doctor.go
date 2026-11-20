@@ -12,11 +12,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"kestrel/internal/config"
-	"kestrel/internal/control"
-	"kestrel/internal/opencode"
-	"kestrel/internal/upstream"
-	"kestrel/plugin"
+	"unlimitedcode/internal/config"
+	"unlimitedcode/internal/control"
+	"unlimitedcode/internal/opencode"
+	"unlimitedcode/internal/upstream"
+	"unlimitedcode/plugin"
 )
 
 const (
@@ -69,7 +69,7 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 	} {
 		if err := portFree(item.addr); err != nil {
 			if daemonUp {
-				add(item.name, OK, item.addr+" (in use by kestrel)")
+				add(item.name, OK, item.addr+" (in use by UnlimitedCode)")
 			} else {
 				add(item.name, Fail, fmt.Sprintf("%s: %v", item.addr, err))
 			}
@@ -102,7 +102,7 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 
 	for _, shim := range opencode.Shims() {
 		if opencode.IsOpenhopShim(shim) {
-			add("path", Warn, shim+" is an openhop shim; run kestrel setup --takeover to remove it")
+			add("path", Warn, shim+" is an openhop shim; run UnlimitedCode setup --takeover to remove it")
 			break
 		}
 	}
@@ -194,7 +194,7 @@ func checkPlugin(add func(string, string, string)) {
 	path := filepath.Join(dir, plugin.Filename)
 	current, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		add("plugin", Warn, "not installed: run kestrel plugin install")
+		add("plugin", Warn, "not installed: run UnlimitedCode plugin install")
 		return
 	}
 	if err != nil {
@@ -205,7 +205,7 @@ func checkPlugin(add func(string, string, string)) {
 		add("plugin", OK, path)
 		return
 	}
-	add("plugin", Warn, path+" differs from the embedded plugin (rerun kestrel plugin install)")
+	add("plugin", Warn, path+" differs from the embedded plugin (rerun UnlimitedCode plugin install)")
 }
 
 func checkGate(ctx context.Context, dialer upstream.Dialer, add func(string, string, string)) {

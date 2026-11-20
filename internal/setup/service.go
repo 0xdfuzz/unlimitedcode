@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Health reports whether a Kestrel daemon answers on addr.
+// Health reports whether a UnlimitedCode daemon answers on addr.
 func Health(addr string) bool {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := client.Get("http://" + addr + "/health")
