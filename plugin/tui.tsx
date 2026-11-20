@@ -337,10 +337,27 @@ async function doRotate(context: any): Promise<any | null> {
   return st
 }
 
+function themeColors(context: any) {
+  const root = context.theme
+  const surface = typeof root?.surface === "function" ? root.surface("dialog") : root
+  const accent =
+    root?.categorical?.[0]?.[200] ??
+    surface?.text?.action?.primary?.base ??
+    surface?.text?.base
+  return {
+    base: surface.text.base,
+    muted: surface.text.muted,
+    accent,
+    border: surface.border?.base ?? surface.text.muted,
+    ok: surface.text.feedback.success.base,
+    warn: surface.text.feedback.warning.base,
+    err: surface.text.feedback.error.base,
+  }
+}
+
 function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any }) {
   const [winIdx, setWinIdx] = createSignal(3) // Default: All
   const [freeOnly, setFreeOnly] = createSignal(props.stats.free.buckets.All.turns > 0)
-  const [status, setStatus] = createSignal<any>(props.initialStatus)
 
   const activeWindow = createMemo(() => WINDOWS[winIdx()])
   const scope = createMemo(() => (freeOnly() ? props.stats.free : props.stats.all))
@@ -387,32 +404,18 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
           setFreeOnly((v) => !v)
         },
       },
-      {
-        bind: "r",
-        title: "Rotate proxy",
-        group: "UnlimitedCode",
-        async run() {
-          const next = await doRotate(props.context)
-          if (next) setStatus(next)
-        },
-      },
     ],
   }))
 
-  const theme = () => props.context.theme
-  const fgBase = () => theme().text.base
-  const fgMuted = () => theme().text.muted
-  const fgOk = () => theme().text.feedback.success.base
-  const fgWarn = () => theme().text.feedback.warning.base
-  const fgErr = () => theme().text.feedback.error.base
+  const c = () => themeColors(props.context)
 
   const proxyState = createMemo(() => {
-    const st = status()
-    if (!st) return { label: "OFFLINE", color: fgErr(), ip: "-", rot: 0, burnt: 0 }
+    const st = props.initialStatus
+    if (!st) return { label: "OFFLINE", color: c().err, ip: "-", rot: 0, burnt: 0 }
     const paused = Boolean(st.hop?.paused)
     return {
       label: paused ? "PAUSED" : "AUTO",
-      color: paused ? fgWarn() : fgOk(),
+      color: paused ? c().warn : c().ok,
       ip: shortenIPv6(st.pool?.active_ip || "?"),
       rot: Number(st.hop?.count ?? 0),
       burnt: Number(st.pool?.burnt_count ?? 0),
@@ -427,112 +430,125 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
   ]
 
   return (
-    <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
-      <box flexDirection="row" justifyContent="space-between" width="100%">
-        <text fg={fgBase()}>
-          <b>UnlimitedCode</b>
-          <span style={{ fg: fgMuted() }}>{" · Usage Stats  "}</span>
-          <span style={{ fg: freeOnly() ? fgOk() : fgBase() }}>{freeOnly() ? "[Free]" : "[All]"}</span>
-        </text>
-        <box flexDirection="row" gap={1}>
-          <For each={WINDOWS}>
-            {(w, idx) => (
-              <text fg={winIdx() === idx() ? fgBase() : fgMuted()}>
-                {winIdx() === idx() ? `[${w}]` : w}
-              </text>
-            )}
-          </For>
-          <text fg={fgMuted()}>{"  esc"}</text>
+    <box paddingLeft={3} paddingRight={3} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1} width="100%">
+      <box flexDirection="column" width="100%">
+        <box flexDirection="row" justifyContent="space-between" width="100%">
+          <text fg={c().base}>
+            <b>UnlimitedCode</b>
+            <span style={{ fg: c().muted }}>{" · Usage Stats  "}</span>
+            <span style={{ fg: freeOnly() ? c().accent : c().base }}>
+              {freeOnly() ? "[Free]" : "[All]"}
+            </span>
+          </text>
+          <box flexDirection="row" gap={1}>
+            <For each={WINDOWS}>
+              {(w, idx) => (
+                <text fg={winIdx() === idx() ? c().accent : c().muted}>
+                  {winIdx() === idx() ? `[${w}]` : w}
+                </text>
+              )}
+            </For>
+            <text fg={c().muted}>{"  esc"}</text>
+          </box>
         </box>
+        <box width="100%" height={1} border={["bottom"]} borderColor={c().border} />
       </box>
-
-      <text fg={fgMuted()}>{"─".repeat(72)}</text>
 
       <Show
         when={!props.stats.error}
-        fallback={<text fg={fgWarn()}>{props.stats.error}</text>}
+        fallback={<text fg={c().warn}>{props.stats.error}</text>}
       >
-        <box flexDirection="column">
-          <text fg={fgMuted()}>
-            {padR("Window", 10) +
-              padL("Turns", 8) +
-              padL("Input", 10) +
-              padL("Output", 10) +
-              padL("Cache", 11) +
-              padL("Total", 11) +
-              padL("Est. Saved", 12)}
-          </text>
+        <box flexDirection="column" width="100%">
+          <box flexDirection="row" justifyContent="space-between" width="100%">
+            <text fg={c().muted}>{padR("Window", 10)}</text>
+            <text fg={c().muted}>
+              {padL("Turns", 8) +
+                padL("Input", 10) +
+                padL("Output", 10) +
+                padL("Cache", 11) +
+                padL("Total", 11) +
+                padL("Est. Saved", 12)}
+            </text>
+          </box>
           <For each={tableRows}>
             {(row) => {
               const b = () => scope().buckets[row.key]
               const tot = () => b().inTok + b().outTok + b().cacheTok
               const selected = () => activeWindow() === row.key
               return (
-                <text fg={selected() ? fgBase() : fgMuted()}>
-                  <span style={{ fg: selected() ? fgBase() : fgMuted() }}>{padR(row.label, 10)}</span>
-                  <span style={{ fg: fgBase() }}>{padL(fmtTurns(b().turns), 8)}</span>
-                  <span style={{ fg: fgMuted() }}>{padL(fmtNum(b().inTok), 10)}</span>
-                  <span style={{ fg: fgMuted() }}>{padL(fmtNum(b().outTok), 10)}</span>
-                  <span style={{ fg: fgMuted() }}>{padL(fmtNum(b().cacheTok), 11)}</span>
-                  <span style={{ fg: fgBase() }}>
-                    <b>{padL(fmtNum(tot()), 11)}</b>
-                  </span>
-                  <span style={{ fg: fgOk() }}>{padL(fmtSaved(b()), 12)}</span>
-                </text>
+                <box flexDirection="row" justifyContent="space-between" width="100%">
+                  <text fg={selected() ? c().accent : c().muted}>{padR(row.label, 10)}</text>
+                  <text fg={c().base}>
+                    <span style={{ fg: c().base }}>{padL(fmtTurns(b().turns), 8)}</span>
+                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().inTok), 10)}</span>
+                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().outTok), 10)}</span>
+                    <span style={{ fg: c().muted }}>{padL(fmtNum(b().cacheTok), 11)}</span>
+                    <span style={{ fg: c().base }}>
+                      <b>{padL(fmtNum(tot()), 11)}</b>
+                    </span>
+                    <span style={{ fg: c().ok }}>{padL(fmtSaved(b()), 12)}</span>
+                  </text>
+                </box>
               )
             }}
           </For>
         </box>
 
-        <text fg={fgMuted()}>
-          {"Cache Hit "}
-          <span style={{ fg: fgBase() }}>{`${scope().cacheRatio}%`}</span>
-          {"  ·  Avg "}
-          <span style={{ fg: fgBase() }}>{`${scope().avgTps} tok/s`}</span>
-          {"  ·  Streak "}
-          <span style={{ fg: fgBase() }}>{`${scope().streak}d`}</span>
-          {"  ·  Peak "}
-          <span style={{ fg: fgBase() }}>{`${String(scope().peakHour).padStart(2, "0")}:00`}</span>
-          {"  ·  429s "}
-          <span style={{ fg: proxyState().rot > 0 ? fgWarn() : fgOk() }}>{String(proxyState().rot)}</span>
-        </text>
+        <box flexDirection="row" justifyContent="space-between" width="100%">
+          <text fg={c().muted}>
+            {"Cache Hit "}
+            <span style={{ fg: c().base }}>{`${scope().cacheRatio}%`}</span>
+            {"  ·  Avg "}
+            <span style={{ fg: c().base }}>{`${scope().avgTps} tok/s`}</span>
+            {"  ·  Streak "}
+            <span style={{ fg: c().base }}>{`${scope().streak}d`}</span>
+            {"  ·  Peak "}
+            <span style={{ fg: c().base }}>{`${String(scope().peakHour).padStart(2, "0")}:00`}</span>
+          </text>
+          <text fg={c().muted}>
+            {"429s "}
+            <span style={{ fg: proxyState().rot > 0 ? c().warn : c().ok }}>{String(proxyState().rot)}</span>
+          </text>
+        </box>
 
-        <box flexDirection="column">
-          <text fg={fgMuted()}>{`Top Models (${activeWindow()}${freeOnly() ? " · free" : " · all"})`}</text>
+        <box flexDirection="column" width="100%">
+          <text fg={c().muted}>{`Top Models (${activeWindow()} · ${freeOnly() ? "free" : "all"})`}</text>
           <Show
             when={topModels().length > 0}
-            fallback={<text fg={fgMuted()}>{"  No turns in this window."}</text>}
+            fallback={<text fg={c().muted}>{"No turns in this window."}</text>}
           >
             <For each={topModels()}>
               {(m) => (
-                <text fg={fgBase()}>
-                  <span style={{ fg: fgBase() }}>{padR(m.name, 26)}</span>
-                  {" "}
-                  <span style={{ fg: fgOk() }}>{"━".repeat(m.filled)}</span>
-                  <span style={{ fg: fgMuted() }}>{"─".repeat(m.empty)}</span>
-                  <span style={{ fg: fgBase() }}>{padL(`${m.pct}%`, 5)}</span>
-                  <span style={{ fg: fgBase() }}>{padL(m.total, 9)}</span>
-                  <span style={{ fg: fgMuted() }}>{padL(m.turns, 7)}</span>
-                  <span style={{ fg: fgMuted() }}>{padL(m.tps, 10)}</span>
-                </text>
+                <box flexDirection="row" justifyContent="space-between" width="100%">
+                  <text fg={c().base}>{padR(m.name, 26)}</text>
+                  <text fg={c().base}>
+                    <span style={{ fg: c().accent }}>{"━".repeat(m.filled)}</span>
+                    <span style={{ fg: c().muted }}>{"─".repeat(m.empty)}</span>
+                    <span style={{ fg: c().base }}>{padL(`${m.pct}%`, 5)}</span>
+                    <span style={{ fg: c().base }}>{padL(m.total, 9)}</span>
+                    <span style={{ fg: c().muted }}>{padL(m.turns, 7)}</span>
+                    <span style={{ fg: c().muted }}>{padL(m.tps, 10)}</span>
+                  </text>
+                </box>
               )}
             </For>
           </Show>
         </box>
       </Show>
 
-      <text fg={fgMuted()}>{"─".repeat(72)}</text>
-
-      <box flexDirection="row" justifyContent="space-between" width="100%">
-        <text fg={fgMuted()}>
-          <span style={{ fg: proxyState().color }}>{"● "}</span>
-          <span style={{ fg: fgBase() }}>{`Proxy ${proxyState().label}`}</span>
-          {` · ${proxyState().ip} · rot `}
-          <span style={{ fg: proxyState().rot > 0 ? fgWarn() : fgBase() }}>{String(proxyState().rot)}</span>
-          {" · burnt "}
-          <span style={{ fg: proxyState().burnt > 0 ? fgErr() : fgBase() }}>{String(proxyState().burnt)}</span>
-        </text>
-        <text fg={fgMuted()}>{"tab window · f scope · r rot"}</text>
+      <box flexDirection="column" width="100%">
+        <box width="100%" height={1} border={["top"]} borderColor={c().border} />
+        <box flexDirection="row" justifyContent="space-between" width="100%">
+          <text fg={c().muted}>
+            <span style={{ fg: proxyState().color }}>{"● "}</span>
+            <span style={{ fg: c().base }}>{`Proxy ${proxyState().label}`}</span>
+            {` · ${proxyState().ip} · rot `}
+            <span style={{ fg: proxyState().rot > 0 ? c().warn : c().base }}>{String(proxyState().rot)}</span>
+            {" · burnt "}
+            <span style={{ fg: proxyState().burnt > 0 ? c().err : c().base }}>{String(proxyState().burnt)}</span>
+          </text>
+          <text fg={c().muted}>{"tab window · f scope"}</text>
+        </box>
       </box>
     </box>
   )
@@ -541,12 +557,7 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
 function StatusDialog(props: { context: any; initialStatus: any }) {
   const [status, setStatus] = createSignal<any>(props.initialStatus)
 
-  const theme = () => props.context.theme
-  const fgBase = () => theme().text.base
-  const fgMuted = () => theme().text.muted
-  const fgOk = () => theme().text.feedback.success.base
-  const fgWarn = () => theme().text.feedback.warning.base
-  const fgErr = () => theme().text.feedback.error.base
+  const c = () => themeColors(props.context)
 
   props.context.keymap.layer(() => ({
     mode: "modal",
@@ -586,68 +597,82 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
   const slots = () => (Array.isArray(status()?.pool?.slots) ? status().pool.slots : [])
 
   return (
-    <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
-      <box flexDirection="row" justifyContent="space-between" width="100%">
-        <text fg={fgBase()}>
-          <b>UnlimitedCode</b>
-          <span style={{ fg: fgMuted() }}>{" · Pool & Proxy Status"}</span>
-        </text>
-        <text fg={fgMuted()}>{"esc"}</text>
+    <box paddingLeft={3} paddingRight={3} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1} width="100%">
+      <box flexDirection="column" width="100%">
+        <box flexDirection="row" justifyContent="space-between" width="100%">
+          <text fg={c().base}>
+            <b>UnlimitedCode</b>
+            <span style={{ fg: c().muted }}>{" · Pool & Proxy Status"}</span>
+          </text>
+          <text fg={c().muted}>{"esc"}</text>
+        </box>
+        <box width="100%" height={1} border={["bottom"]} borderColor={c().border} />
       </box>
-
-      <text fg={fgMuted()}>{"─".repeat(66)}</text>
 
       <Show
         when={status()}
-        fallback={<text fg={fgErr()}>{`Daemon is not reachable on ${controlURL()}.`}</text>}
+        fallback={<text fg={c().err}>{`Daemon is not reachable on ${controlURL()}.`}</text>}
       >
-        <box flexDirection="column">
-          <text fg={fgMuted()}>
-            {"State      "}
-            <span style={{ fg: paused() ? fgWarn() : fgOk() }}>
-              {paused() ? "⏸ PAUSED" : "● AUTO"}
-            </span>
-            <span style={{ fg: fgMuted() }}>{`   v${status().version || "?"}`}</span>
-          </text>
-          <text fg={fgMuted()}>
-            {"Egress     "}
-            <span style={{ fg: fgBase() }}>{status().egress?.mode || "masque"}</span>
-            <span style={{ fg: fgMuted() }}>{"   Active IP "}</span>
-            <span style={{ fg: fgBase() }}>{shortenIPv6(status().pool?.active_ip || "?")}</span>
-          </text>
-          <text fg={fgMuted()}>
-            {"Rotations  "}
-            <span style={{ fg: (status().hop?.count ?? 0) > 0 ? fgWarn() : fgBase() }}>
-              {String(status().hop?.count ?? 0)}
-            </span>
-            <span style={{ fg: fgMuted() }}>{"   Burnt today "}</span>
-            <span style={{ fg: (status().pool?.burnt_count ?? 0) > 0 ? fgErr() : fgBase() }}>
-              {String(status().pool?.burnt_count ?? 0)}
-            </span>
-          </text>
+        <box flexDirection="column" width="100%">
+          <box flexDirection="row" justifyContent="space-between" width="100%">
+            <text fg={c().muted}>
+              {"State      "}
+              <span style={{ fg: paused() ? c().warn : c().ok }}>
+                {paused() ? "⏸ PAUSED" : "● AUTO"}
+              </span>
+            </text>
+            <text fg={c().muted}>{`v${status().version || "?"}`}</text>
+          </box>
+          <box flexDirection="row" justifyContent="space-between" width="100%">
+            <text fg={c().muted}>
+              {"Egress     "}
+              <span style={{ fg: c().base }}>{status().egress?.mode || "masque"}</span>
+            </text>
+            <text fg={c().muted}>
+              {"Active IP "}
+              <span style={{ fg: c().accent }}>{shortenIPv6(status().pool?.active_ip || "?")}</span>
+            </text>
+          </box>
+          <box flexDirection="row" justifyContent="space-between" width="100%">
+            <text fg={c().muted}>
+              {"Rotations  "}
+              <span style={{ fg: (status().hop?.count ?? 0) > 0 ? c().warn : c().base }}>
+                {String(status().hop?.count ?? 0)}
+              </span>
+            </text>
+            <text fg={c().muted}>
+              {"Burnt today "}
+              <span style={{ fg: (status().pool?.burnt_count ?? 0) > 0 ? c().err : c().base }}>
+                {String(status().pool?.burnt_count ?? 0)}
+              </span>
+            </text>
+          </box>
         </box>
 
         <Show when={slots().length > 0}>
-          <box flexDirection="column">
-            <text fg={fgMuted()}>
-              {padR("Slot", 8) +
-                padR("State", 12) +
-                padR("IPv6 /64 Egress", 24) +
-                padR("PoP", 8) +
-                padL("Recycles", 10)}
-            </text>
+          <box flexDirection="column" width="100%">
+            <box flexDirection="row" justifyContent="space-between" width="100%">
+              <text fg={c().muted}>{padR("Slot", 10) + padR("State", 12)}</text>
+              <text fg={c().muted}>{padR("IPv6 /64 Egress", 24) + padR("PoP", 8) + padL("Recycles", 10)}</text>
+            </box>
             <For each={slots()}>
               {(sl: any) => {
                 const icon = sl.active ? "● active" : sl.state === "ready" ? "○ warm" : `◌ ${sl.state}`
-                const color = sl.active ? fgOk() : sl.state === "ready" ? fgBase() : fgWarn()
+                const color = sl.active ? c().ok : sl.state === "ready" ? c().base : c().warn
                 return (
-                  <text fg={fgMuted()}>
-                    <span style={{ fg: fgBase() }}>{padR(`slot-${sl.id}`, 8)}</span>
-                    <span style={{ fg: color }}>{padR(icon, 12)}</span>
-                    <span style={{ fg: fgBase() }}>{padR(shortenIPv6(sl.ip || "-"), 24)}</span>
-                    <span style={{ fg: fgMuted() }}>{padR(sl.colo || "-", 8)}</span>
-                    <span style={{ fg: fgBase() }}>{padL(String(sl.recycles ?? 0), 10)}</span>
-                  </text>
+                  <box flexDirection="row" justifyContent="space-between" width="100%">
+                    <text fg={c().muted}>
+                      <span style={{ fg: c().base }}>{padR(`slot-${sl.id}`, 10)}</span>
+                      <span style={{ fg: color }}>{padR(icon, 12)}</span>
+                    </text>
+                    <text fg={c().muted}>
+                      <span style={{ fg: sl.active ? c().accent : c().base }}>
+                        {padR(shortenIPv6(sl.ip || "-"), 24)}
+                      </span>
+                      <span style={{ fg: c().muted }}>{padR(sl.colo || "-", 8)}</span>
+                      <span style={{ fg: c().base }}>{padL(String(sl.recycles ?? 0), 10)}</span>
+                    </text>
+                  </box>
                 )
               }}
             </For>
@@ -655,11 +680,12 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
         </Show>
       </Show>
 
-      <text fg={fgMuted()}>{"─".repeat(66)}</text>
-
-      <box flexDirection="row" justifyContent="space-between" width="100%">
-        <text fg={fgMuted()}>{`Control ${controlURL()}`}</text>
-        <text fg={fgMuted()}>{"r rotate · p pause/resume · esc close"}</text>
+      <box flexDirection="column" width="100%">
+        <box width="100%" height={1} border={["top"]} borderColor={c().border} />
+        <box flexDirection="row" justifyContent="space-between" width="100%">
+          <text fg={c().muted}>{`Control ${controlURL()}`}</text>
+          <text fg={c().muted}>{"r rotate · p pause/resume"}</text>
+        </box>
       </box>
     </box>
   )
