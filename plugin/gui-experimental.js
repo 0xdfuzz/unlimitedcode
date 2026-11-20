@@ -323,7 +323,6 @@ const SlotSchema = Schema.Struct({
 
 const StatusSchema = Schema.Struct({
   online: Schema.Boolean,
-  paused: Schema.Boolean,
   version: Schema.String,
   ip: Schema.String,
   ready: Schema.Number,
@@ -344,7 +343,6 @@ const UnlimitedIpc = sdk.Ipc.define({
   methods: {
     status: { output: StatusSchema },
     rotate: { output: RotateResultSchema },
-    setPaused: { input: Schema.Boolean, output: StatusSchema },
     restart: { output: StatusSchema },
     stats: { output: Schema.String },
   },
@@ -360,7 +358,6 @@ async function fetchSummary() {
   if (!st) {
     return {
       online: false,
-      paused: false,
       version: "",
       ip: "offline",
       ready: 0,
@@ -382,7 +379,6 @@ async function fetchSummary() {
   const ready = slots.filter((s) => s.state === "ready").length
   return {
     online: true,
-    paused: Boolean(st.hop?.paused),
     version: String(st.version || ""),
     ip: shortenIPv6(st.pool?.active_ip || "?"),
     ready,
@@ -669,10 +665,8 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
       "display:flex;justify-content:space-between;align-items:center;padding-top:10px;border-top:1px solid var(--border-weak-base,rgba(255,255,255,0.1));font-size:12px;"
     const dotColor = !summary.online
       ? "var(--icon-critical-base,#f87171)"
-      : summary.paused
-        ? "var(--icon-warning-base,#fbbf24)"
-        : "var(--icon-success-base,#4ade80)"
-    const stLabel = !summary.online ? "OFFLINE" : summary.paused ? "PAUSED" : "AUTO"
+      : "var(--icon-success-base,#4ade80)"
+    const stLabel = !summary.online ? "OFFLINE" : "AUTO"
 
     const fLeft = document.createElement("button")
     fLeft.type = "button"
@@ -739,10 +733,6 @@ exports.default = sdk.Plugin.define({
           durationMs: Number(res?.duration_ms ?? 0),
         }
       },
-      async setPaused(paused) {
-        await controlCall("/pause", "POST", { paused: Boolean(paused) }, 4000)
-        return await fetchSummary()
-      },
       async restart() {
         await controlCall("/shutdown", "POST", {}, 2000)
         const deadline = Date.now() + 2500
@@ -761,7 +751,6 @@ exports.default = sdk.Plugin.define({
   setup(ctx) {
     const [summary, setSummary] = createSignal({
       online: true,
-      paused: false,
       version: "",
       ip: "…",
       ready: 0,
@@ -801,24 +790,6 @@ exports.default = sdk.Plugin.define({
           variant: res?.ok ? "success" : "error",
           duration: 4000,
         })
-        return next
-      } catch {
-        return null
-      }
-    }
-
-    const togglePause = async () => {
-      try {
-        const next = await ctx.main(UnlimitedIpc).setPaused(!summary().paused)
-        if (next) {
-          setSummary(next)
-          ctx.toasts.show({
-            title: "UnlimitedCode",
-            description: next.paused ? "Auto-rotate paused" : "Auto-rotate resumed",
-            variant: "default",
-            duration: 3000,
-          })
-        }
         return next
       } catch {
         return null
@@ -888,10 +859,8 @@ exports.default = sdk.Plugin.define({
           const s = summary()
           const color = !s.online
             ? "var(--icon-critical-base,#f87171)"
-            : s.paused
-              ? "var(--icon-warning-base,#fbbf24)"
-              : "var(--icon-success-base,#4ade80)"
-          const stLabel = !s.online ? "OFFLINE" : s.paused ? "PAUSED" : "AUTO"
+            : "var(--icon-success-base,#4ade80)"
+          const stLabel = !s.online ? "OFFLINE" : "AUTO"
           btn.textContent = "unlimited"
           btn.style.color = color
           btn.title = `UnlimitedCode · ${stLabel} · ${s.ip} · pool ${s.ready}/${s.total}`
