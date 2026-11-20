@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"kestrel/internal/control"
-	"kestrel/internal/hop"
+	"kestrel/internal/rotate"
 	"kestrel/internal/proxy"
 	"kestrel/internal/upstream"
 )
@@ -119,7 +119,7 @@ func TestEventHopsAndClosesTunnel(t *testing.T) {
 	})
 
 	rec := &testReconnector{}
-	manager, err := hop.New(hop.Options{
+	manager, err := rotate.New(rotate.Options{
 		Gate:        p,
 		Reconnector: rec,
 		Timeout:     2 * time.Second,
@@ -169,7 +169,7 @@ func TestEventHopsAndClosesTunnel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var result hop.Result
+	var result rotate.Result
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}

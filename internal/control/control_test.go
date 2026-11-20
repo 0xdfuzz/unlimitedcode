@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"kestrel/internal/control"
-	"kestrel/internal/hop"
+	"kestrel/internal/rotate"
 	"kestrel/internal/proxy"
 )
 
@@ -22,24 +22,24 @@ const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 type fakeHopper struct {
 	mu     sync.Mutex
-	reqs   []hop.Request
-	result hop.Result
+	reqs   []rotate.Request
+	result rotate.Result
 }
 
-func (f *fakeHopper) Hop(ctx context.Context, req hop.Request) hop.Result {
+func (f *fakeHopper) Hop(ctx context.Context, req rotate.Request) rotate.Result {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reqs = append(f.reqs, req)
 	if f.result.Status == "" {
-		return hop.Result{Status: "ok", DurationMS: 12}
+		return rotate.Result{Status: "ok", DurationMS: 12}
 	}
 	return f.result
 }
 
-func (f *fakeHopper) Stats() hop.Stats {
+func (f *fakeHopper) Stats() rotate.Stats {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return hop.Stats{Enabled: true, Count: int64(len(f.reqs)), LastStatus: "ok"}
+	return rotate.Stats{Enabled: true, Count: int64(len(f.reqs)), LastStatus: "ok"}
 }
 
 func newServerWithHop(t *testing.T, hopper control.Hopper) *control.Server {
@@ -139,7 +139,7 @@ func TestEventTriggersHop(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var result hop.Result
+	var result rotate.Result
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestEventIgnoresOtherTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var result hop.Result
+	var result rotate.Result
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestEventFreeLimitTriggersHop(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var result hop.Result
+	var result rotate.Result
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestEventOtherTypeIgnored(t *testing.T) {
 
 	resp := postJSON(t, ts.URL+"/event", `{"type":"other","attempt":2}`, true)
 	defer resp.Body.Close()
-	var result hop.Result
+	var result rotate.Result
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestHopRequiresToken(t *testing.T) {
 
 func TestStatusIncludesHop(t *testing.T) {
 	hopper := &fakeHopper{}
-	hopper.result = hop.Result{Status: "ok"}
+	hopper.result = rotate.Result{Status: "ok"}
 	ts := httptest.NewServer(newServerWithHop(t, hopper).Handler())
 	defer ts.Close()
 

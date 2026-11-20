@@ -1,11 +1,11 @@
-// Package usque manages an in-process pool of Cloudflare WARP MASQUE L4
+// Package masque manages an in-process pool of Cloudflare WARP MASQUE L4
 // clients over HTTP/3 CONNECT streams.
 //
 // With pool size >= 2, one slot serves active traffic while spare slots stay
 // warm on distinct IPv6 /64 prefixes. A rotation swaps the active slot
 // immediately (0ms) and recycles the burned slot asynchronously via key
 // re-enrollment, avoiding previously burned prefixes until the daily UTC reset.
-package usque
+package masque
 
 import (
 	"bufio"
@@ -105,20 +105,20 @@ func NewPool(opts Options) (*Pool, error) {
 		opts.Size = defaultPoolSize
 	}
 	if opts.Size > 8 {
-		return nil, fmt.Errorf("usque: pool size %d exceeds max 8", opts.Size)
+		return nil, fmt.Errorf("masque: pool size %d exceeds max 8", opts.Size)
 	}
 	if opts.DialTimeout <= 0 {
 		opts.DialTimeout = 10 * time.Second
 	}
 	if opts.StateDir == "" {
-		return nil, errors.New("usque: state dir is required")
+		return nil, errors.New("masque: state dir is required")
 	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
 	if err := os.MkdirAll(opts.StateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("usque: create state dir: %w", err)
+		return nil, fmt.Errorf("masque: create state dir: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -156,7 +156,7 @@ func (p *Pool) Start(ctx context.Context) error {
 		go func(sl *slot) {
 			defer wg.Done()
 			if err := p.bootSlot(ctx, sl); err != nil {
-				p.log.Printf("usque slot=%d boot failed: %v", sl.id, err)
+				p.log.Printf("masque slot=%d boot failed: %v", sl.id, err)
 				errCh <- fmt.Errorf("slot %d: %w", sl.id, err)
 				return
 			}
@@ -195,7 +195,7 @@ func (p *Pool) Start(ctx context.Context) error {
 			errs = append(errs, err.Error())
 		}
 		p.Close()
-		return fmt.Errorf("usque pool failed to start any slot: %s", strings.Join(errs, "; "))
+		return fmt.Errorf("masque pool failed to start any slot: %s", strings.Join(errs, "; "))
 	}
 
 	// If spare slots landed on the same /64 prefix as the active slot, recycle
@@ -213,7 +213,7 @@ func (p *Pool) Start(ctx context.Context) error {
 			dup := s.state == "ready" && s.prefix == activePrefix
 			s.mu.Unlock()
 			if dup {
-				p.log.Printf("usque slot=%d shares prefix %s with active slot=%d; recycling in background", s.id, activePrefix, active.id)
+				p.log.Printf("masque slot=%d shares prefix %s with active slot=%d; recycling in background", s.id, activePrefix, active.id)
 				p.wg.Add(1)
 				go func(sl *slot) {
 					defer p.wg.Done()
@@ -225,7 +225,7 @@ func (p *Pool) Start(ctx context.Context) error {
 		}
 	}
 
-	p.log.Printf("usque in-process pool ready slots=%d/%d active=%d", readyCount, p.size, active.id)
+	p.log.Printf("masque in-process pool ready slots=%d/%d active=%d", readyCount, p.size, active.id)
 	return nil
 }
 
@@ -263,7 +263,7 @@ func (p *Pool) Name() string {
 // shared IPv4 NAT.
 func (p *Pool) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	if network != "tcp" && network != "tcp4" && network != "tcp6" {
-		return nil, fmt.Errorf("usque: unsupported network %q", network)
+		return nil, fmt.Errorf("masque: unsupported network %q", network)
 	}
 	target := p.resolveIPv6Target(ctx, addr)
 	s := p.activeSlot()
@@ -275,7 +275,7 @@ func (p *Pool) DialContext(ctx context.Context, network, addr string) (net.Conn,
 		p.mu.Lock()
 		p.active = alt.id
 		p.mu.Unlock()
-		p.log.Printf("usque active slot=%d dial failed, failing over to slot=%d", s.id, alt.id)
+		p.log.Printf("masque active slot=%d dial failed, failing over to slot=%d", s.id, alt.id)
 		return p.dialSlot(ctx, alt, target, addr)
 	}
 	return nil, err
@@ -286,7 +286,7 @@ func (p *Pool) dialSlot(ctx context.Context, s *slot, target, fallbackAddr strin
 	client := s.client
 	s.mu.Unlock()
 	if client == nil {
-		return nil, fmt.Errorf("usque slot %d is not connected", s.id)
+		return nil, fmt.Errorf("masque slot %d is not connected", s.id)
 	}
 	conn, err := client.DialContext(ctx, target)
 	if err == nil || target == fallbackAddr {
@@ -315,7 +315,7 @@ func (p *Pool) Reconnect(ctx context.Context) error {
 		next.mu.Lock()
 		nextIP := next.ip
 		next.mu.Unlock()
-		p.log.Printf("usque fast-rotate slot=%d (%s) -> slot=%d (%s); recycling slot=%d in background",
+		p.log.Printf("masque fast-rotate slot=%d (%s) -> slot=%d (%s); recycling slot=%d in background",
 			old.id, oldIP, next.id, nextIP, old.id)
 
 		p.wg.Add(1)
@@ -324,13 +324,13 @@ func (p *Pool) Reconnect(ctx context.Context) error {
 			bgCtx, cancel := context.WithTimeout(p.ctx, 45*time.Second)
 			defer cancel()
 			if err := p.recycleSlot(bgCtx, old, oldPrefix); err != nil {
-				p.log.Printf("usque bg recycle slot=%d failed: %v", old.id, err)
+				p.log.Printf("masque bg recycle slot=%d failed: %v", old.id, err)
 			}
 		}()
 		return nil
 	}
 
-	p.log.Printf("usque sync-rotate recycling slot=%d (%s)", old.id, oldIP)
+	p.log.Printf("masque sync-rotate recycling slot=%d (%s)", old.id, oldIP)
 	if err := p.recycleSlot(ctx, old, oldPrefix); err != nil {
 		if alt := p.pickOtherReady(old.id); alt != nil {
 			p.mu.Lock()
@@ -428,7 +428,7 @@ func (p *Pool) pickOtherReady(excludeID int) *slot {
 func (p *Pool) bootSlot(ctx context.Context, s *slot) error {
 	cfg, err := loadSlotConfig(s.configPath)
 	if err != nil {
-		p.log.Printf("usque slot=%d registering new WARP device", s.id)
+		p.log.Printf("masque slot=%d registering new WARP device", s.id)
 		cfg, err = registerAndEnroll(ctx)
 		if err != nil {
 			s.setFailed(err)
@@ -468,19 +468,19 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 		}
 		if err != nil {
 			lastErr = err
-			p.log.Printf("usque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
+			p.log.Printf("masque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
 			continue
 		}
 		if err := saveSlotConfig(s.configPath, nextCfg); err != nil {
 			lastErr = err
-			p.log.Printf("usque slot=%d recycle try=%d save error: %v", s.id, attempt, err)
+			p.log.Printf("masque slot=%d recycle try=%d save error: %v", s.id, attempt, err)
 			continue
 		}
 		prev = nextCfg
 
 		if err := p.connectAndVerify(ctx, s, nextCfg); err != nil {
 			lastErr = err
-			p.log.Printf("usque slot=%d recycle try=%d verify error: %v", s.id, attempt, err)
+			p.log.Printf("masque slot=%d recycle try=%d verify error: %v", s.id, attempt, err)
 			continue
 		}
 
@@ -494,10 +494,10 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 			s.mu.Lock()
 			s.recycles++
 			s.mu.Unlock()
-			p.log.Printf("usque slot=%d recycled try=%d ip=%s prefix=%s", s.id, attempt, gotIP, gotPrefix)
+			p.log.Printf("masque slot=%d recycled try=%d ip=%s prefix=%s", s.id, attempt, gotIP, gotPrefix)
 			return nil
 		}
-		p.log.Printf("usque slot=%d recycle try=%d landed on burnt/same prefix %s (%s), retrying", s.id, attempt, gotPrefix, gotIP)
+		p.log.Printf("masque slot=%d recycle try=%d landed on burnt/same prefix %s (%s), retrying", s.id, attempt, gotPrefix, gotIP)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("recycle failed")

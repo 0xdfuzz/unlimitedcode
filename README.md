@@ -14,7 +14,7 @@ IP hits quota.
 ## Highlights
 
 - **Single binary (`kestrel`, ~9.5 MB)**: embedded MASQUE L4 client
-  (`internal/usque`) with only `quic-go` outside Go's standard library. No
+  (`internal/masque`) with only `quic-go` outside Go's standard library. No
   `warp-cli`, no `warp-svc`, no TUN driver, no admin rights.
 - **Instant (`0ms`) egress rotation**: keeps a warm pool (default 2 slots) on
   distinct IPv6 `/64` prefixes (IPv6-first via OS DNS + Cloudflare DoH). On
@@ -91,8 +91,9 @@ Key settings (`config.json`, see [config.example.json](config.example.json)):
 
 ## Acknowledgments
 
-The in-process Cloudflare WARP MASQUE L4 protocol implementation is inspired by
-[Diniboy1123/usque](https://github.com/Diniboy1123/usque).
+- [Diniboy1123/usque](https://github.com/Diniboy1123/usque) — Cloudflare WARP MASQUE registration, key enrollment, and HTTP/3 L4 `CONNECT` protocol research.
+- [quic-go/quic-go](https://github.com/quic-go/quic-go) — pure-Go QUIC and HTTP/3 transport powering the embedded MASQUE client.
+- [OpenCode](https://opencode.ai) — official client and Plugin V2 hook architecture.
 
 ## License
 

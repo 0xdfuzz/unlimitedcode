@@ -17,11 +17,11 @@ import (
 	"time"
 
 	"kestrel/internal/activity"
-	"kestrel/internal/hop"
+	"kestrel/internal/rotate"
 	"kestrel/internal/observer"
 	"kestrel/internal/proxy"
 	"kestrel/internal/resume"
-	"kestrel/internal/usque"
+	"kestrel/internal/masque"
 )
 
 type Logger interface {
@@ -42,16 +42,16 @@ type Status struct {
 	Egress        Egress          `json:"egress"`
 	Proxy         proxy.Stats     `json:"proxy"`
 	HopEnabled    bool             `json:"hop_enabled"`
-	Hop           hop.Stats        `json:"hop"`
-	Pool          *usque.PoolStats `json:"pool,omitempty"`
+	Hop           rotate.Stats        `json:"hop"`
+	Pool          *masque.PoolStats `json:"pool,omitempty"`
 	Observer      *observer.Stats  `json:"observer,omitempty"`
 	Resume        *resume.Stats    `json:"resume,omitempty"`
 }
 
-// Hopper is implemented by hop.Manager.
+// Hopper is implemented by rotate.Manager.
 type Hopper interface {
-	Hop(context.Context, hop.Request) hop.Result
-	Stats() hop.Stats
+	Hop(context.Context, rotate.Request) rotate.Result
+	Stats() rotate.Stats
 }
 
 type Options struct {
@@ -63,7 +63,7 @@ type Options struct {
 	Egress      Egress
 	Stats       func() proxy.Stats
 	Hop         Hopper
-	Pool        func() usque.PoolStats
+	Pool        func() masque.PoolStats
 	Observer    func() observer.Stats
 	Resume      func() resume.Stats
 	Activity    *activity.Tracker
@@ -219,7 +219,7 @@ func (s *Server) eventHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ev.Type != "provider.free-limit" {
-		writeJSON(w, hop.Result{Status: "ignored"})
+		writeJSON(w, rotate.Result{Status: "ignored"})
 		return
 	}
 	s.opts.Activity.MarkPluginEvent()
@@ -228,10 +228,10 @@ func (s *Server) eventHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) runHop(w http.ResponseWriter, r *http.Request, ev event, reason string) {
 	if s.opts.Hop == nil {
-		writeJSON(w, hop.Result{Status: "disabled"})
+		writeJSON(w, rotate.Result{Status: "disabled"})
 		return
 	}
-	writeJSON(w, s.opts.Hop.Hop(r.Context(), hop.Request{
+	writeJSON(w, s.opts.Hop.Hop(r.Context(), rotate.Request{
 		Session: ev.Session,
 		Model:   ev.Model,
 		Agent:   ev.Agent,

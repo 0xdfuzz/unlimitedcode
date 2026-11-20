@@ -1,4 +1,4 @@
-package usque
+package masque
 
 import (
 	"testing"

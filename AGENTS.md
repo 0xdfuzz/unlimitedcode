@@ -4,9 +4,9 @@ Engineering rules and architecture contract for **Kestrel**.
 
 ## 1. Package Map
 - `cmd/kestrel/`: CLI entrypoint split by command (`main.go`, `daemon.go`, `setup.go`, `status.go`, `run.go`).
-- `internal/usque/`: in-process Cloudflare WARP MASQUE L4 client (`masque.go`) and warm rotation pool (`pool.go`) with IPv6-first DoH resolution and burned-prefix tracking.
+- `internal/masque/`: in-process Cloudflare WARP MASQUE L4 client (`client.go`) and warm rotation pool (`pool.go`) with IPv6-first DoH resolution and burned-prefix tracking.
 - `internal/proxy/`: transparent HTTP `CONNECT` proxy with split routing (routed hosts via MASQUE egress, other hosts via direct passthrough when enabled) and pause/close gate for clean rotation.
-- `internal/hop/`: single-flight rotation coordinator with failure cooldown and rolling hourly/daily budgets.
+- `internal/rotate/`: single-flight rotation coordinator with failure cooldown and rolling hourly/daily budgets.
 - `internal/control/`: loopback-only authenticated HTTP control API (`/health`, `/status`, `/rotate`, `/event`).
 - `internal/config/`: JSON config loading, defaults, env overrides, and validation.
 - `internal/observer/`: OpenCode service log tail fallback when the plugin is absent.

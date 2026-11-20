@@ -1,9 +1,9 @@
-// Package hop changes the egress of the local proxy.
+// Package rotate changes the egress of the local proxy.
 //
 // A hop is a single-flight operation. Concurrent callers wait for the hop in
 // progress instead of starting another reconnect, so a burst of quota errors
 // produces exactly one network change.
-package hop
+package rotate
 
 import (
 	"context"
