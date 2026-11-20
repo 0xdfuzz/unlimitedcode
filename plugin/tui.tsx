@@ -662,25 +662,6 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
         },
       },
       {
-        bind: "p",
-        title: "Toggle pause",
-        group: "UnlimitedCode",
-        async run() {
-          const cur = Boolean(status()?.hop?.paused)
-          const res = await controlCall("/pause", "POST", { paused: !cur })
-          if (res) {
-            const refreshed = await controlCall("/status", "GET", undefined, 2_000)
-            if (refreshed) setStatus(refreshed)
-            props.context.ui.toast.show({
-              title: "UnlimitedCode",
-              message: !cur ? "Auto-rotate paused" : "Auto-rotate resumed",
-              variant: "info",
-              duration: 3000,
-            })
-          }
-        },
-      },
-      {
         bind: "x",
         title: "Restart daemon",
         group: "UnlimitedCode",
@@ -783,7 +764,7 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
         <box width="100%" height={1} border={["top"]} borderColor={c().border} />
         <box flexDirection="row" justifyContent="space-between" width="100%">
           <text fg={c().muted}>{`Control ${controlURL()}`}</text>
-          <text fg={c().muted}>{"r rotate · p pause · x restart"}</text>
+          <text fg={c().muted}>{"r rotate · x restart"}</text>
         </box>
       </box>
     </box>
@@ -889,17 +870,16 @@ export default {
             {
               id: "unlimitedcode.menu",
               title: "UnlimitedCode Controls",
-              description: "Stats, rotate egress IP, pause/resume & pool details",
+              description: "Stats, rotate egress IP, pool details & restart daemon",
               group: "UnlimitedCode",
               slash: { name: "unlimited" },
               palette: true,
               async run() {
                 const status = await controlCall("/status", "GET", undefined, 2_000)
-                const paused = Boolean(status?.hop?.paused)
                 const ip = shortenIPv6(status?.pool?.active_ip || "offline")
                 const ready = status?.pool?.slots?.filter((s: any) => s.state === "ready").length ?? 0
                 const total = status?.pool?.slots?.length ?? 0
-                const badge = !status ? "OFFLINE" : paused ? "PAUSED" : "AUTO"
+                const badge = !status ? "OFFLINE" : "AUTO"
 
                 const choice = await context.ui.dialog.select({
                   title: `UnlimitedCode · ${badge}`,
@@ -914,11 +894,6 @@ export default {
                       title: "Rotate egress IP",
                       value: "rotate",
                       description: status ? `${ip} · pool ${ready}/${total}` : "Daemon offline",
-                    },
-                    {
-                      title: paused ? "Resume auto-rotate" : "Pause auto-rotate",
-                      value: paused ? "resume" : "pause",
-                      description: "Automatic 429 recovery",
                     },
                     {
                       title: "Pool & proxy details",
@@ -941,24 +916,6 @@ export default {
                   await doRotate(context)
                 } else if (choice === "restart") {
                   await doRestartDaemon(context)
-                } else if (choice === "pause" || choice === "resume") {
-                  const nextPaused = choice === "pause"
-                  const res = await controlCall("/pause", "POST", { paused: nextPaused })
-                  if (res) {
-                    context.ui.toast.show({
-                      title: "UnlimitedCode",
-                      message: nextPaused ? "Auto-rotate paused" : "Auto-rotate resumed",
-                      variant: "info",
-                      duration: 3000,
-                    })
-                  } else {
-                    context.ui.toast.show({
-                      title: "UnlimitedCode",
-                      message: "Daemon unreachable",
-                      variant: "error",
-                      duration: 3500,
-                    })
-                  }
                 } else if (choice === "details") {
                   await openStatusModal(context, status)
                 }

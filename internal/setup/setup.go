@@ -40,7 +40,9 @@ func EnsureConfig(path string) (string, bool, error) {
 
 // ensureInstalledAt writes a one-time Unix millisecond timestamp marking when
 // UnlimitedCode was first installed so /unlimited-stats only counts free-tier
-// tokens used after installation.
+// tokens used after installation. Preserves the existing timestamp across
+// upgrades and repairs, and seeds from config.json mtime when upgrading from
+// an older release that lacked the marker file.
 func ensureInstalledAt(dir string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
@@ -49,7 +51,11 @@ func ensureInstalledAt(dir string) {
 	if _, err := os.Stat(marker); err == nil {
 		return
 	}
-	_ = os.WriteFile(marker, []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)+"\n"), 0o600)
+	ts := time.Now().UnixMilli()
+	if info, err := os.Stat(filepath.Join(dir, "config.json")); err == nil && !info.ModTime().IsZero() {
+		ts = info.ModTime().UnixMilli()
+	}
+	_ = os.WriteFile(marker, []byte(strconv.FormatInt(ts, 10)+"\n"), 0o600)
 }
 
 func opencodeConfigDir() (string, error) {

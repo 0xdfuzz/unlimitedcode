@@ -703,13 +703,6 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
     })
     fRight.appendChild(rotBtn)
 
-    const pauseBtn = actionBtn(summary.paused ? "Resume" : "Pause", async () => {
-      const next = await actions.togglePause()
-      if (next) summary = next
-      render()
-    })
-    fRight.appendChild(pauseBtn)
-
     const restartBtn = actionBtn("Restart", async () => {
       restartBtn.textContent = "Restarting…"
       const next = await actions.restart()
@@ -866,7 +859,6 @@ exports.default = sdk.Plugin.define({
       ctx.dialogs.open((dialog) =>
         buildStatsElement(parsed, cur || summary(), dialog, {
           rotate: runRotate,
-          togglePause,
           restart: runRestart,
         }),
       )
@@ -939,7 +931,7 @@ exports.default = sdk.Plugin.define({
     ctx.add(sdk.Command, () => ({
       id: "menu",
       title: "UnlimitedCode: Status & Controls",
-      description: "Open UnlimitedCode stats, IP rotation & pause controls",
+      description: "Open UnlimitedCode stats, IP rotation & daemon controls",
       group: "UnlimitedCode",
       featured: true,
       suggested: true,
