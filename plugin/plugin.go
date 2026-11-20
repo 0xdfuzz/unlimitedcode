@@ -12,12 +12,12 @@ import (
 //go:embed unlimitedcode.ts
 var Source []byte
 
-//go:embed tui.ts
+//go:embed tui.tsx
 var TUISource []byte
 
 const (
 	Filename    = "unlimitedcode.ts"
-	TUIFilename = "tui.ts"
+	TUIFilename = "tui.tsx"
 	PluginID    = "unlimitedcode"
 )
 
@@ -77,6 +77,8 @@ func Install(dir string) (string, error) {
 	if err := os.MkdirAll(tuiDir, 0o700); err != nil {
 		return "", fmt.Errorf("create tui plugin dir: %w", err)
 	}
+	// Clean up legacy non-JSX tui.ts if upgrading from an older version.
+	_ = os.Remove(filepath.Join(tuiDir, "tui.ts"))
 	tuiPath := filepath.Join(tuiDir, TUIFilename)
 	if err := writeIfChanged(tuiPath, TUISource); err != nil {
 		return "", fmt.Errorf("write tui plugin: %w", err)
