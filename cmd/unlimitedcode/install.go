@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 
 	"unlimitedcode/internal/config"
 	"unlimitedcode/internal/opencode"
@@ -141,12 +140,6 @@ func cmdInstall(args []string, interactive bool) {
 		fmt.Printf("autostart %s\n", vbs)
 	}
 
-	if warmDaemon(installedBin, cfg.Control) {
-		fmt.Printf("daemon    http://%s (online & warm)\n", cfg.Listen)
-	} else {
-		fmt.Printf("daemon    will auto-start when OpenCode opens\n")
-	}
-
 	// Restart OpenCode background service if reachable so the new plugin & proxy apply immediately.
 	if official != "" {
 		if err := exec.CommandContext(context.Background(), official, "service", "restart").Run(); err == nil {
@@ -179,42 +172,6 @@ func pauseIfWindows() {
 		fmt.Print("\nPress Enter to close...")
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 	}
-}
-
-// warmDaemon starts the installed daemon in the background during installation
-// so control.token and the MASQUE pool slots are registered and ready before
-// the user opens OpenCode CLI or Desktop.
-func warmDaemon(binPath, controlAddr string) bool {
-	if setup.Health(controlAddr) {
-		return true
-	}
-	cmd := exec.Command(binPath, "daemon")
-	cmd.Env = cleanProxyEnv(os.Environ())
-	if err := cmd.Start(); err != nil {
-		return false
-	}
-	_ = cmd.Process.Release()
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		if setup.Health(controlAddr) {
-			return true
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return false
-}
-
-func cleanProxyEnv(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		k, _, _ := strings.Cut(kv, "=")
-		switch strings.ToUpper(k) {
-		case "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY":
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
 }
 
 func cmdUninstall(args []string) {

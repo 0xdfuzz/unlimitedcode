@@ -231,6 +231,7 @@ func cmdDaemon(args []string) {
 		Egress:      control.Egress{Mode: cfg.Egress.Mode, Upstream: cfg.UpstreamName()},
 		Stats:       p.Stats,
 		Activity:    tracker,
+		OnShutdown:  cancel,
 		Logger:      logger,
 	}
 	if rotManager != nil {

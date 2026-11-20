@@ -13,6 +13,7 @@ const sessionAliases = new Map<string, string>()
 let lastIDTs = 0
 let idCounter = 0
 let lastKnownRotations = -1
+let lastSyncAt = 0
 
 // Matches OpenCode's Identifier.descending() contract ("ses_" + 12 hex of ~(ms*0x1000+counter) + 14 Base62).
 function generateSessionID(): string {
@@ -97,8 +98,16 @@ function installedBinary(): string {
   return join(stateHome(), name)
 }
 
+function readConfigJSON(): any {
+  try {
+    return JSON.parse(readFileSync(join(stateHome(), "config.json"), "utf8"))
+  } catch {
+    return null
+  }
+}
+
 function controlURL(): string {
-  const raw = process.env.UNLIMITEDCODE_CONTROL || DEFAULT_CONTROL
+  const raw = process.env.UNLIMITEDCODE_CONTROL || readConfigJSON()?.control || DEFAULT_CONTROL
   return raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
 }
 
@@ -149,7 +158,10 @@ async function ensureDaemonRunning(): Promise<boolean> {
   return false
 }
 
-async function syncDaemonState(): Promise<any | null> {
+async function syncDaemonState(force = false): Promise<any | null> {
+  const now = Date.now()
+  if (!force && now - lastSyncAt < 3_000) return null
+  lastSyncAt = now
   const st = await controlCall("/status", "GET", undefined, 1_500)
   if (!st) return null
   if (st.listen) {
@@ -225,14 +237,14 @@ async function requestRotate(event: any): Promise<{ retry: boolean; delay: numbe
 
 async function setup(ctx: any): Promise<void> {
   if (await ensureDaemonRunning()) {
-    await syncDaemonState()
+    await syncDaemonState(true)
   }
 
   if (typeof ctx?.session?.hook !== "function") return
 
   try {
     await ctx.session.hook("model.request", async (event: any) => {
-      await syncDaemonState()
+      await syncDaemonState(false)
       const sid = String(event?.sessionID ?? "")
       if (sid && event?.headers) {
         applySessionAlias(event.headers, sid)
@@ -253,7 +265,7 @@ async function setup(ctx: any): Promise<void> {
     if (event?.error?.type !== "provider.free-limit") return
 
     await ensureDaemonRunning()
-    const st = await syncDaemonState()
+    const st = await syncDaemonState(true)
     if (st?.hop?.paused) return { retry: false, delay: 0 }
 
     const sid = String(event?.sessionID ?? "")

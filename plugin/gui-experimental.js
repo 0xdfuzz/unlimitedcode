@@ -23,8 +23,16 @@ function stateHome() {
   return path.join(os.homedir(), ".local", "state", "unlimitedcode")
 }
 
+function readConfigJSON() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(stateHome(), "config.json"), "utf8"))
+  } catch {
+    return null
+  }
+}
+
 function controlURL() {
-  const raw = process.env.UNLIMITEDCODE_CONTROL || DEFAULT_CONTROL
+  const raw = process.env.UNLIMITEDCODE_CONTROL || readConfigJSON()?.control || DEFAULT_CONTROL
   return raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
 }
 
@@ -319,6 +327,7 @@ const UnlimitedIpc = sdk.Ipc.define({
     status: { output: StatusSchema },
     rotate: { output: RotateResultSchema },
     setPaused: { input: Schema.Boolean, output: StatusSchema },
+    restart: { output: StatusSchema },
     stats: { output: Schema.String },
   },
 })
@@ -695,6 +704,14 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
     })
     fRight.appendChild(pauseBtn)
 
+    const restartBtn = actionBtn("Restart", async () => {
+      restartBtn.textContent = "Restarting…"
+      const next = await actions.restart()
+      if (next) summary = next
+      render()
+    })
+    fRight.appendChild(restartBtn)
+
     footer.appendChild(fRight)
     root.appendChild(footer)
   }
@@ -725,6 +742,16 @@ exports.default = sdk.Plugin.define({
       },
       async setPaused(paused) {
         await controlCall("/pause", "POST", { paused: Boolean(paused) }, 4000)
+        return await fetchSummary()
+      },
+      async restart() {
+        await controlCall("/shutdown", "POST", {}, 2000)
+        const deadline = Date.now() + 2500
+        while (Date.now() < deadline) {
+          if (!(await isDaemonHealthy())) break
+          await new Promise((r) => setTimeout(r, 150))
+        }
+        await ensureDaemonRunning()
         return await fetchSummary()
       },
       async stats() {
@@ -799,6 +826,26 @@ exports.default = sdk.Plugin.define({
       }
     }
 
+    const runRestart = async () => {
+      try {
+        const next = await ctx.main(UnlimitedIpc).restart()
+        if (next) {
+          setSummary(next)
+          ctx.toasts.show({
+            title: "UnlimitedCode",
+            description: next.online
+              ? `Daemon online · ${next.ip}`
+              : "Daemon failed to start",
+            variant: next.online ? "success" : "error",
+            duration: 4000,
+          })
+        }
+        return next
+      } catch {
+        return null
+      }
+    }
+
     const openStatsDialog = async () => {
       const [raw, cur] = await Promise.all([
         ctx.main(UnlimitedIpc).stats().catch(() => JSON.stringify({ error: "Unable to load stats." })),
@@ -814,6 +861,7 @@ exports.default = sdk.Plugin.define({
         buildStatsElement(parsed, cur || summary(), dialog, {
           rotate: runRotate,
           togglePause,
+          restart: runRestart,
         }),
       )
     }

@@ -72,6 +72,7 @@ type Options struct {
 	Observer    func() observer.Stats
 	Resume      func() resume.Stats
 	Activity    *activity.Tracker
+	OnShutdown  func()
 	Logger      Logger
 }
 
@@ -127,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/hop", s.auth(s.hopHandler))
 	mux.HandleFunc("/pause", s.auth(s.pauseHandler))
 	mux.HandleFunc("/event", s.auth(s.eventHandler))
+	mux.HandleFunc("/shutdown", s.auth(s.shutdownHandler))
 	return mux
 }
 
@@ -154,6 +156,20 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "version": s.opts.Version})
+}
+
+func (s *Server) shutdownHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "stopping"})
+	if s.opts.OnShutdown != nil {
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			s.opts.OnShutdown()
+		}()
+	}
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {

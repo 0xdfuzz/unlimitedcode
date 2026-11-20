@@ -53,8 +53,16 @@ function stateHome(): string {
   return join(homedir(), ".local", "state", "unlimitedcode")
 }
 
+function readConfigJSON(): any {
+  try {
+    return JSON.parse(readFileSync(join(stateHome(), "config.json"), "utf8"))
+  } catch {
+    return null
+  }
+}
+
 function controlURL(): string {
-  const raw = process.env.UNLIMITEDCODE_CONTROL || DEFAULT_CONTROL
+  const raw = process.env.UNLIMITEDCODE_CONTROL || readConfigJSON()?.control || DEFAULT_CONTROL
   return raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
 }
 
@@ -385,6 +393,39 @@ async function doRotate(context: any): Promise<any | null> {
   return st
 }
 
+async function doRestartDaemon(context: any): Promise<any | null> {
+  context.ui.toast.show({
+    title: "UnlimitedCode",
+    message: "Restarting daemon…",
+    variant: "info",
+    duration: 2500,
+  })
+  await controlCall("/shutdown", "POST", {}, 2_000)
+  const stopDeadline = Date.now() + 2_500
+  while (Date.now() < stopDeadline) {
+    if (!(await isDaemonHealthy())) break
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  const ok = await ensureDaemonRunning()
+  const st = ok ? await controlCall("/status", "GET", undefined, 2_000) : null
+  if (st) {
+    context.ui.toast.show({
+      title: "UnlimitedCode",
+      message: `Daemon online · ${shortenIPv6(st.pool?.active_ip || "?")}`,
+      variant: "success",
+      duration: 4000,
+    })
+  } else {
+    context.ui.toast.show({
+      title: "UnlimitedCode",
+      message: "Daemon failed to start (run unlimitedcode doctor)",
+      variant: "error",
+      duration: 4500,
+    })
+  }
+  return st
+}
+
 function themeColors(context: any) {
   const root = context.theme
   const surface = typeof root?.surface === "function" ? root.surface("dialog") : root
@@ -638,6 +679,15 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
           }
         },
       },
+      {
+        bind: "x",
+        title: "Restart daemon",
+        group: "UnlimitedCode",
+        async run() {
+          const next = await doRestartDaemon(props.context)
+          if (next) setStatus(next)
+        },
+      },
     ],
   }))
 
@@ -732,7 +782,7 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
         <box width="100%" height={1} border={["top"]} borderColor={c().border} />
         <box flexDirection="row" justifyContent="space-between" width="100%">
           <text fg={c().muted}>{`Control ${controlURL()}`}</text>
-          <text fg={c().muted}>{"r rotate · p pause/resume"}</text>
+          <text fg={c().muted}>{"r rotate · p pause · x restart"}</text>
         </box>
       </box>
     </box>
@@ -876,6 +926,11 @@ export default {
                         ? `rot ${status.hop?.count ?? 0} · burnt ${status.pool?.burnt_count ?? 0}`
                         : "Daemon offline",
                     },
+                    {
+                      title: "Restart daemon",
+                      value: "restart",
+                      description: "Reconnect local proxy & MASQUE pool",
+                    },
                   ],
                 })
 
@@ -883,6 +938,8 @@ export default {
                   await openStatsModal(context)
                 } else if (choice === "rotate") {
                   await doRotate(context)
+                } else if (choice === "restart") {
+                  await doRestartDaemon(context)
                 } else if (choice === "pause" || choice === "resume") {
                   const nextPaused = choice === "pause"
                   const res = await controlCall("/pause", "POST", { paused: nextPaused })
