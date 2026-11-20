@@ -1,10 +1,8 @@
 package doctor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,14 +10,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"kestrel/internal/config"
 	"kestrel/internal/control"
 	"kestrel/internal/opencode"
 	"kestrel/internal/upstream"
-	"kestrel/internal/warp"
 	"kestrel/plugin"
 )
 
@@ -82,8 +78,8 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 		add(item.name, OK, item.addr+" (free)")
 	}
 
-	if cfg.Egress.Mode == config.ModeUsque {
-		add("egress", OK, fmt.Sprintf("usque -> embedded MASQUE pool (size=%d, state=%s)", cfg.Egress.PoolSize, config.UsqueDir()))
+	if cfg.Egress.Mode == config.ModeMasque || cfg.Egress.Mode == config.ModeUsque {
+		add("egress", OK, fmt.Sprintf("masque -> embedded pool (size=%d, state=%s)", cfg.Egress.PoolSize, config.MasqueDir()))
 	} else {
 		dialer, err := upstream.Build(cfg)
 		if err != nil {
@@ -91,9 +87,6 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 		} else {
 			add("egress", OK, fmt.Sprintf("%s -> %s", cfg.Egress.Mode, dialer.Name()))
 			checkGate(ctx, dialer, add)
-			if cfg.Egress.Mode == config.ModeWarp || cfg.Egress.Mode == config.ModeHTTPConnect {
-				checkWarp(ctx, cfg, add)
-			}
 		}
 	}
 
@@ -108,13 +101,13 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 	}
 
 	for _, shim := range opencode.Shims() {
-		if opencode.IsShim(shim) {
-			add("path", Warn, shim+" is a shim; kestrel run resolves the real binary")
+		if opencode.IsOpenhopShim(shim) {
+			add("path", Warn, shim+" is an openhop shim; run kestrel setup --takeover to remove it")
 			break
 		}
 	}
 
-	checkHop(ctx, cfg, add)
+	checkRotate(cfg, add)
 	checkObserver(cfg, add)
 	checkResume(cfg, add)
 	checkPlugin(add)
@@ -122,37 +115,16 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 	return checks
 }
 
-func checkHop(ctx context.Context, cfg config.Config, add func(string, string, string)) {
-	if !cfg.Hop.Enabled {
-		add("hop", OK, "disabled by config")
+func checkRotate(cfg config.Config, add func(string, string, string)) {
+	if !cfg.Rotate.Enabled {
+		add("rotate", OK, "disabled by config")
 		return
 	}
-	if cfg.Egress.Mode == config.ModeUsque {
-		add("hop", OK, fmt.Sprintf("embedded MASQUE pool=%d timeout=%ds cooldown=%ds", cfg.Egress.PoolSize, cfg.Hop.TimeoutSeconds, cfg.Hop.FailureCooldownSecs))
+	if cfg.Egress.Mode == config.ModeMasque || cfg.Egress.Mode == config.ModeUsque {
+		add("rotate", OK, fmt.Sprintf("embedded MASQUE pool=%d timeout=%ds cooldown=%ds", cfg.Egress.PoolSize, cfg.Rotate.TimeoutSeconds, cfg.Rotate.FailureCooldownSecs))
 		return
 	}
-	if cfg.Egress.Mode != config.ModeWarp {
-		add("hop", Warn, "requires egress.mode=warp or usque")
-		return
-	}
-	path, err := warp.Find(cfg.Hop.WarpCLI)
-	if err != nil {
-		add("hop", Fail, err.Error())
-		return
-	}
-	detail := fmt.Sprintf("%s timeout=%ds cooldown=%ds", path, cfg.Hop.TimeoutSeconds, cfg.Hop.FailureCooldownSecs)
-	statusCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	state, err := warp.New(path).Status(statusCtx)
-	if err != nil {
-		add("hop", Warn, detail+"; status: "+err.Error())
-		return
-	}
-	if strings.EqualFold(state, "Connected") {
-		add("hop", OK, detail+"; warp="+state)
-		return
-	}
-	add("hop", Warn, detail+"; warp="+state)
+	add("rotate", Warn, "requires egress.mode=masque")
 }
 
 func checkObserver(cfg config.Config, add func(string, string, string)) {
@@ -247,82 +219,6 @@ func checkGate(ctx context.Context, dialer upstream.Dialer, add func(string, str
 	}
 	conn.Close()
 	add("gate", OK, fmt.Sprintf("opencode.ai:443 via %s in %s", dialer.Name(), time.Since(start).Round(time.Millisecond)))
-}
-
-func checkWarp(ctx context.Context, cfg config.Config, add func(string, string, string)) {
-	dialer, err := upstream.Build(cfg)
-	if err != nil {
-		add("warp", Fail, err.Error())
-		return
-	}
-	start := time.Now()
-	trace, err := fetchTrace(ctx, dialer)
-	if err != nil {
-		add("warp", Fail, err.Error())
-		return
-	}
-	detail := fmt.Sprintf("warp=%s ip=%s colo=%s in %s",
-		trace["warp"], trace["ip"], trace["colo"], time.Since(start).Round(time.Millisecond))
-	switch {
-	case trace["warp"] == "on":
-		add("warp", OK, detail)
-	case cfg.Egress.Mode == config.ModeWarp:
-		add("warp", Fail, detail+" (WARP proxy mode required)")
-	default:
-		add("warp", Warn, detail)
-	}
-}
-
-func fetchTrace(ctx context.Context, dialer upstream.Dialer) (map[string]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
-	defer cancel()
-
-	raw, err := dialer.DialContext(ctx, "tcp", "www.cloudflare.com:443")
-	if err != nil {
-		return nil, fmt.Errorf("CONNECT www.cloudflare.com:443: %w", err)
-	}
-	defer raw.Close()
-
-	tlsConn := tls.Client(raw, &tls.Config{ServerName: "www.cloudflare.com", MinVersion: tls.VersionTLS12})
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		return nil, fmt.Errorf("tls: %w", err)
-	}
-	deadline := time.Now().Add(12 * time.Second)
-	if d, ok := ctx.Deadline(); ok {
-		deadline = d
-	}
-	tlsConn.SetDeadline(deadline)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.cloudflare.com/cdn-cgi/trace", nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := req.Write(tlsConn); err != nil {
-		return nil, fmt.Errorf("write trace request: %w", err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
-	if err != nil {
-		return nil, fmt.Errorf("read trace response: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("trace status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
-	if err != nil {
-		return nil, err
-	}
-	values := make(map[string]string)
-	for _, line := range strings.Split(string(body), "\n") {
-		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
-		if ok {
-			values[key] = value
-		}
-	}
-	if values["warp"] == "" {
-		return nil, fmt.Errorf("trace did not report warp state")
-	}
-	return values, nil
 }
 
 func writable(dir string) error {

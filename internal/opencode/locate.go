@@ -18,14 +18,19 @@ func Names() []string {
 	return []string{"opencode"}
 }
 
-// IsShim reports whether path belongs to the openhop PATH shim or another
-// launcher that must not be treated as the official binary.
-func IsShim(path string) bool {
+// IsOpenhopShim reports whether path belongs to an openhop/opencode-unlimited PATH shim.
+func IsOpenhopShim(path string) bool {
 	lower := strings.ToLower(filepath.ToSlash(path))
-	if strings.Contains(lower, "/openhop/") {
+	return strings.Contains(lower, "/openhop/") || strings.Contains(lower, "/opencode-unlimited/")
+}
+
+// IsShim reports whether path is a wrapper script (.cmd/.bat) or an openhop
+// shim that must not be treated as the native opencode binary.
+func IsShim(path string) bool {
+	if IsOpenhopShim(path) {
 		return true
 	}
-	ext := strings.ToLower(filepath.Ext(lower))
+	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".cmd" || ext == ".bat"
 }
 

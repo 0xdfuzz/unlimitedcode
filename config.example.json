@@ -6,18 +6,17 @@
     "*.opencode.ai"
   ],
   "allow_ports": [
-    443
+    443,
+    80
   ],
   "egress": {
-    "mode": "usque",
+    "mode": "masque",
     "pool_size": 2,
-    "warp_proxy": "http://127.0.0.1:40000",
-    "upstream": "",
+    "passthrough": true,
     "direct_fallback": false
   },
-  "hop": {
+  "rotate": {
     "enabled": true,
-    "warp_cli": "",
     "timeout_seconds": 45,
     "failure_cooldown_seconds": 5,
     "max_per_hour": 30,

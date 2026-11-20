@@ -171,12 +171,6 @@ func Build(cfg config.Config) (Dialer, error) {
 	switch cfg.Egress.Mode {
 	case config.ModeDirect:
 		return Direct{Timeout: timeout}, nil
-	case config.ModeWarp:
-		d, err := parseHTTPConnect(cfg.Egress.WarpProxy, timeout)
-		if err != nil {
-			return nil, fmt.Errorf("egress.warp_proxy: %w", err)
-		}
-		primary = d
 	case config.ModeHTTPConnect:
 		d, err := parseHTTPConnect(cfg.Egress.Upstream, timeout)
 		if err != nil {

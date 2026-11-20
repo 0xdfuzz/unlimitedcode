@@ -118,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.health)
 	mux.HandleFunc("/status", s.auth(s.status))
+	mux.HandleFunc("/rotate", s.auth(s.hopHandler))
 	mux.HandleFunc("/hop", s.auth(s.hopHandler))
 	mux.HandleFunc("/event", s.auth(s.eventHandler))
 	return mux

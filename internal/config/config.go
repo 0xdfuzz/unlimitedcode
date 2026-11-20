@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	ModeWarp        = "warp"
-	ModeUsque       = "usque"
+	ModeMasque      = "masque"
+	ModeUsque       = "usque" // alias for ModeMasque
 	ModeHTTPConnect = "http-connect"
 	ModeDirect      = "direct"
 )
@@ -27,7 +27,7 @@ type Config struct {
 	Allow      []string `json:"allow"`
 	AllowPorts []int    `json:"allow_ports"`
 	Egress     Egress   `json:"egress"`
-	Hop        Hop      `json:"hop"`
+	Rotate     Rotate   `json:"rotate"`
 	Observer   Observer `json:"observer"`
 	Resume     Resume   `json:"resume"`
 	Limits     Limits   `json:"limits"`
@@ -37,13 +37,10 @@ type Config struct {
 
 type Egress struct {
 	Mode           string `json:"mode"`
-	WarpProxy      string `json:"warp_proxy"`
-	Upstream       string `json:"upstream"`
+	PoolSize       int    `json:"pool_size,omitempty"`
+	Upstream       string `json:"upstream,omitempty"`
 	DirectFallback bool   `json:"direct_fallback"`
 	Passthrough    *bool  `json:"passthrough,omitempty"`
-	UsqueBin       string `json:"usque_bin,omitempty"`
-	PoolSize       int    `json:"pool_size,omitempty"`
-	PoolBasePort   int    `json:"pool_base_port,omitempty"`
 }
 
 func (e Egress) PassthroughEnabled() bool {
@@ -53,13 +50,12 @@ func (e Egress) PassthroughEnabled() bool {
 	return *e.Passthrough
 }
 
-type Hop struct {
-	Enabled             bool   `json:"enabled"`
-	WarpCLI             string `json:"warp_cli"`
-	TimeoutSeconds      int    `json:"timeout_seconds"`
-	FailureCooldownSecs int    `json:"failure_cooldown_seconds"`
-	MaxPerHour          int    `json:"max_per_hour"`
-	MaxPerDay           int    `json:"max_per_day"`
+type Rotate struct {
+	Enabled             bool `json:"enabled"`
+	TimeoutSeconds      int  `json:"timeout_seconds"`
+	FailureCooldownSecs int  `json:"failure_cooldown_seconds"`
+	MaxPerHour          int  `json:"max_per_hour"`
+	MaxPerDay           int  `json:"max_per_day"`
 }
 
 type Observer struct {
@@ -89,12 +85,10 @@ func Default() Config {
 		Allow:      []string{"opencode.ai", "*.opencode.ai"},
 		AllowPorts: []int{443, 80},
 		Egress: Egress{
-			Mode:         ModeUsque,
-			WarpProxy:    "http://127.0.0.1:40000",
-			PoolSize:     2,
-			PoolBasePort: 43401,
+			Mode:     ModeMasque,
+			PoolSize: 2,
 		},
-		Hop: Hop{
+		Rotate: Rotate{
 			Enabled:             true,
 			TimeoutSeconds:      45,
 			FailureCooldownSecs: 5,
@@ -141,7 +135,7 @@ func Home() string {
 func ConfigPath() string { return filepath.Join(Home(), "config.json") }
 func LogPath() string    { return filepath.Join(Home(), "logs", "kestrel.log") }
 func TokenPath() string  { return filepath.Join(Home(), "control.token") }
-func UsqueDir() string   { return filepath.Join(Home(), "usque") }
+func MasqueDir() string  { return filepath.Join(Home(), "masque") }
 
 // ObserverStatePath stores the log tail offset so a restart does not replay
 // old quota errors.
@@ -192,9 +186,6 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("KESTREL_EGRESS_MODE"); v != "" {
 		c.Egress.Mode = v
 	}
-	if v := os.Getenv("KESTREL_WARP_PROXY"); v != "" {
-		c.Egress.WarpProxy = v
-	}
 	if v := os.Getenv("KESTREL_UPSTREAM"); v != "" {
 		c.Egress.Upstream = v
 	}
@@ -203,17 +194,9 @@ func applyEnv(c *Config) {
 			c.Egress.DirectFallback = b
 		}
 	}
-	if v := os.Getenv("KESTREL_USQUE_BIN"); v != "" {
-		c.Egress.UsqueBin = v
-	}
 	if v := os.Getenv("KESTREL_POOL_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Egress.PoolSize = n
-		}
-	}
-	if v := os.Getenv("KESTREL_POOL_BASE_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Egress.PoolBasePort = n
 		}
 	}
 	if v := os.Getenv("KESTREL_MAX_TUNNELS"); v != "" {
@@ -231,32 +214,29 @@ func applyEnv(c *Config) {
 			c.Limits.DialTimeoutSeconds = n
 		}
 	}
-	if v := os.Getenv("KESTREL_HOP_ENABLED"); v != "" {
+	if v := envFirst("KESTREL_ROTATE_ENABLED", "KESTREL_HOP_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
-			c.Hop.Enabled = b
+			c.Rotate.Enabled = b
 		}
 	}
-	if v := os.Getenv("KESTREL_WARP_CLI"); v != "" {
-		c.Hop.WarpCLI = v
-	}
-	if v := os.Getenv("KESTREL_HOP_TIMEOUT_SECONDS"); v != "" {
+	if v := envFirst("KESTREL_ROTATE_TIMEOUT_SECONDS", "KESTREL_HOP_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			c.Hop.TimeoutSeconds = n
+			c.Rotate.TimeoutSeconds = n
 		}
 	}
-	if v := os.Getenv("KESTREL_HOP_FAILURE_COOLDOWN_SECONDS"); v != "" {
+	if v := envFirst("KESTREL_ROTATE_FAILURE_COOLDOWN_SECONDS", "KESTREL_HOP_FAILURE_COOLDOWN_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			c.Hop.FailureCooldownSecs = n
+			c.Rotate.FailureCooldownSecs = n
 		}
 	}
-	if v := os.Getenv("KESTREL_HOP_MAX_PER_HOUR"); v != "" {
+	if v := envFirst("KESTREL_ROTATE_MAX_PER_HOUR", "KESTREL_HOP_MAX_PER_HOUR"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			c.Hop.MaxPerHour = n
+			c.Rotate.MaxPerHour = n
 		}
 	}
-	if v := os.Getenv("KESTREL_HOP_MAX_PER_DAY"); v != "" {
+	if v := envFirst("KESTREL_ROTATE_MAX_PER_DAY", "KESTREL_HOP_MAX_PER_DAY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			c.Hop.MaxPerDay = n
+			c.Rotate.MaxPerDay = n
 		}
 	}
 	if v := os.Getenv("KESTREL_OBSERVER_ENABLED"); v != "" {
@@ -309,25 +289,13 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Egress.Mode {
-	case ModeWarp:
-		if strings.TrimSpace(c.Egress.WarpProxy) == "" {
-			return errors.New("egress.warp_proxy is required in warp mode")
-		}
-		if err := validateProxyURL(c.Egress.WarpProxy); err != nil {
-			return fmt.Errorf("egress.warp_proxy: %w", err)
-		}
-	case ModeUsque:
+	case ModeMasque, ModeUsque:
+		c.Egress.Mode = ModeMasque
 		if c.Egress.PoolSize <= 0 {
 			c.Egress.PoolSize = 2
 		}
 		if c.Egress.PoolSize > 8 {
 			return errors.New("egress.pool_size must be between 1 and 8")
-		}
-		if c.Egress.PoolBasePort <= 0 {
-			c.Egress.PoolBasePort = 43401
-		}
-		if c.Egress.PoolBasePort < 1024 || c.Egress.PoolBasePort+c.Egress.PoolSize-1 > 65535 {
-			return errors.New("egress.pool_base_port out of valid range")
 		}
 	case ModeHTTPConnect:
 		if strings.TrimSpace(c.Egress.Upstream) == "" {
@@ -338,7 +306,7 @@ func (c *Config) Validate() error {
 		}
 	case ModeDirect:
 	default:
-		return fmt.Errorf("egress.mode must be %q, %q, %q or %q", ModeWarp, ModeUsque, ModeHTTPConnect, ModeDirect)
+		return fmt.Errorf("egress.mode must be %q, %q or %q", ModeMasque, ModeHTTPConnect, ModeDirect)
 	}
 
 	if len(c.Allow) == 0 {
@@ -373,17 +341,17 @@ func (c *Config) Validate() error {
 		return errors.New("limits.dial_timeout_seconds must be positive")
 	}
 
-	if c.Hop.TimeoutSeconds < 5 {
-		return errors.New("hop.timeout_seconds must be at least 5")
+	if c.Rotate.TimeoutSeconds < 5 {
+		return errors.New("rotate.timeout_seconds must be at least 5")
 	}
-	if c.Hop.FailureCooldownSecs < 0 {
-		return errors.New("hop.failure_cooldown_seconds must not be negative")
+	if c.Rotate.FailureCooldownSecs < 0 {
+		return errors.New("rotate.failure_cooldown_seconds must not be negative")
 	}
-	if c.Hop.MaxPerHour < 0 {
-		return errors.New("hop.max_per_hour must not be negative")
+	if c.Rotate.MaxPerHour < 0 {
+		return errors.New("rotate.max_per_hour must not be negative")
 	}
-	if c.Hop.MaxPerDay < 0 {
-		return errors.New("hop.max_per_day must not be negative")
+	if c.Rotate.MaxPerDay < 0 {
+		return errors.New("rotate.max_per_day must not be negative")
 	}
 
 	if c.Observer.PollSeconds < 1 {
@@ -406,9 +374,7 @@ func (c *Config) Validate() error {
 
 func (c Config) UpstreamName() string {
 	switch c.Egress.Mode {
-	case ModeWarp:
-		return c.Egress.WarpProxy
-	case ModeUsque:
+	case ModeMasque, ModeUsque:
 		size := c.Egress.PoolSize
 		if size <= 0 {
 			size = 2
@@ -419,6 +385,15 @@ func (c Config) UpstreamName() string {
 	default:
 		return "direct"
 	}
+}
+
+func envFirst(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // NormalizeHost lowercases a host or wildcard pattern, strips a trailing dot,

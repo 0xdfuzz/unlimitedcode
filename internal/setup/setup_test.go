@@ -64,7 +64,7 @@ func TestEnsureConfigCreates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:42987" || !cfg.Hop.Enabled || !cfg.Observer.Enabled {
+	if cfg.Listen != "127.0.0.1:42987" || !cfg.Rotate.Enabled || !cfg.Observer.Enabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }

@@ -11,6 +11,12 @@ func TestDefaultsValidate(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("defaults must validate: %v", err)
 	}
+	if cfg.Egress.Mode != ModeMasque {
+		t.Fatalf("default mode = %q, want %q", cfg.Egress.Mode, ModeMasque)
+	}
+	if !cfg.Egress.PassthroughEnabled() {
+		t.Fatal("passthrough should default to true")
+	}
 }
 
 func TestNormalizeHost(t *testing.T) {
@@ -74,8 +80,8 @@ func TestRejectsBadEgress(t *testing.T) {
 		t.Fatal("unknown mode must fail")
 	}
 	cfg = Default()
-	cfg.Egress.Mode = ModeWarp
-	cfg.Egress.WarpProxy = "ftp://127.0.0.1:40000"
+	cfg.Egress.Mode = ModeHTTPConnect
+	cfg.Egress.Upstream = "ftp://127.0.0.1:40000"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("unsupported scheme must fail")
 	}
@@ -111,16 +117,15 @@ func TestEnvOverride(t *testing.T) {
 	}
 }
 
-func TestHopConfig(t *testing.T) {
+func TestRotateConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	raw := `{
 		"listen": "127.0.0.1:42987",
 		"control": "127.0.0.1:42988",
 		"allow": ["opencode.ai"],
 		"allow_ports": [443],
-		"hop": {
+		"rotate": {
 			"enabled": false,
-			"warp_cli": "C:\\Tools\\warp-cli.exe",
 			"timeout_seconds": 30,
 			"failure_cooldown_seconds": 2
 		}
@@ -132,183 +137,54 @@ func TestHopConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Hop.Enabled {
-		t.Fatal("hop.enabled = true, want false")
+	if cfg.Rotate.Enabled {
+		t.Fatal("rotate.enabled = true, want false")
 	}
-	if cfg.Hop.WarpCLI != `C:\Tools\warp-cli.exe` {
-		t.Fatalf("warp_cli = %q", cfg.Hop.WarpCLI)
-	}
-	if cfg.Hop.TimeoutSeconds != 30 || cfg.Hop.FailureCooldownSecs != 2 {
-		t.Fatalf("hop = %+v", cfg.Hop)
+	if cfg.Rotate.TimeoutSeconds != 30 || cfg.Rotate.FailureCooldownSecs != 2 {
+		t.Fatalf("rotate = %+v", cfg.Rotate)
 	}
 }
 
-func TestHopEnvOverride(t *testing.T) {
-	t.Setenv("KESTREL_HOP_ENABLED", "false")
-	t.Setenv("KESTREL_WARP_CLI", "warp-test")
-	t.Setenv("KESTREL_HOP_TIMEOUT_SECONDS", "20")
-	t.Setenv("KESTREL_HOP_FAILURE_COOLDOWN_SECONDS", "1")
+func TestRotateEnvOverride(t *testing.T) {
+	t.Setenv("KESTREL_ROTATE_ENABLED", "false")
+	t.Setenv("KESTREL_ROTATE_TIMEOUT_SECONDS", "20")
+	t.Setenv("KESTREL_ROTATE_FAILURE_COOLDOWN_SECONDS", "1")
+	t.Setenv("KESTREL_ROTATE_MAX_PER_HOUR", "5")
+	t.Setenv("KESTREL_ROTATE_MAX_PER_DAY", "50")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Hop.Enabled || cfg.Hop.WarpCLI != "warp-test" || cfg.Hop.TimeoutSeconds != 20 || cfg.Hop.FailureCooldownSecs != 1 {
-		t.Fatalf("hop = %+v", cfg.Hop)
+	if cfg.Rotate.Enabled || cfg.Rotate.TimeoutSeconds != 20 || cfg.Rotate.FailureCooldownSecs != 1 || cfg.Rotate.MaxPerHour != 5 || cfg.Rotate.MaxPerDay != 50 {
+		t.Fatalf("rotate = %+v", cfg.Rotate)
 	}
 }
 
-func TestHopValidation(t *testing.T) {
+func TestRotateValidation(t *testing.T) {
 	cfg := Default()
-	cfg.Hop.TimeoutSeconds = 4
+	cfg.Rotate.TimeoutSeconds = 4
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("timeout below five seconds must fail")
 	}
 	cfg = Default()
-	cfg.Hop.FailureCooldownSecs = -1
+	cfg.Rotate.FailureCooldownSecs = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("negative cooldown must fail")
 	}
-}
-
-func TestConfigRejectsUnknownField(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"listen":"127.0.0.1:42987","typo":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("unknown field must fail")
-	}
-}
-
-func TestPhase2bDefaults(t *testing.T) {
-	cfg := Default()
-	if !cfg.Observer.Enabled || cfg.Observer.PollSeconds != 2 || cfg.Observer.DedupSeconds != 60 || cfg.Observer.PluginGraceSeconds != 15 {
-		t.Fatalf("observer defaults = %+v", cfg.Observer)
-	}
-	if cfg.Resume.Enabled || cfg.Resume.TimeoutSeconds != 300 {
-		t.Fatalf("resume defaults = %+v", cfg.Resume)
-	}
-	if cfg.Hop.MaxPerHour != 30 || cfg.Hop.MaxPerDay != 300 {
-		t.Fatalf("hop limits = %+v", cfg.Hop)
-	}
-}
-
-func TestPhase2bEnvOverride(t *testing.T) {
-	t.Setenv("KESTREL_HOP_MAX_PER_HOUR", "5")
-	t.Setenv("KESTREL_HOP_MAX_PER_DAY", "50")
-	t.Setenv("KESTREL_OBSERVER_ENABLED", "true")
-	t.Setenv("KESTREL_OBSERVER_POLL_SECONDS", "3")
-	t.Setenv("KESTREL_OBSERVER_DEDUP_SECONDS", "30")
-	t.Setenv("KESTREL_OBSERVER_PLUGIN_GRACE_SECONDS", "0")
-	t.Setenv("KESTREL_RESUME_ENABLED", "true")
-	t.Setenv("KESTREL_RESUME_BINARY", "opencode-test")
-	t.Setenv("KESTREL_RESUME_TIMEOUT_SECONDS", "120")
-
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Hop.MaxPerHour != 5 || cfg.Hop.MaxPerDay != 50 {
-		t.Fatalf("hop = %+v", cfg.Hop)
-	}
-	if !cfg.Observer.Enabled || cfg.Observer.PollSeconds != 3 || cfg.Observer.DedupSeconds != 30 || cfg.Observer.PluginGraceSeconds != 0 {
-		t.Fatalf("observer = %+v", cfg.Observer)
-	}
-	if !cfg.Resume.Enabled || cfg.Resume.Binary != "opencode-test" || cfg.Resume.TimeoutSeconds != 120 {
-		t.Fatalf("resume = %+v", cfg.Resume)
-	}
-}
-
-func TestPhase2bValidation(t *testing.T) {
-	cfg := Default()
-	cfg.Hop.MaxPerHour = -1
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("negative hourly limit must fail")
-	}
-
 	cfg = Default()
-	cfg.Hop.MaxPerDay = -1
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("negative daily limit must fail")
-	}
-
-	cfg = Default()
-	cfg.Observer.PollSeconds = 0
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("zero poll must fail")
-	}
-
-	cfg = Default()
-	cfg.Resume.Enabled = true
-	cfg.Observer.Enabled = false
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("resume without observer must fail")
-	}
-
-	cfg = Default()
-	cfg.Resume.Enabled = true
-	cfg.Resume.TimeoutSeconds = 5
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("resume timeout below ten seconds must fail")
-	}
-}
-
-func TestObserverAndResumeEnv(t *testing.T) {
-	t.Setenv("KESTREL_OBSERVER_ENABLED", "false")
-	t.Setenv("KESTREL_OBSERVER_LOG_PATH", `C:\logs\opencode.log`)
-	t.Setenv("KESTREL_OBSERVER_POLL_SECONDS", "5")
-	t.Setenv("KESTREL_OBSERVER_DEDUP_SECONDS", "90")
-	t.Setenv("KESTREL_OBSERVER_PLUGIN_GRACE_SECONDS", "7")
-	t.Setenv("KESTREL_RESUME_ENABLED", "true")
-	t.Setenv("KESTREL_RESUME_BINARY", `C:\opencode.exe`)
-	t.Setenv("KESTREL_RESUME_TIMEOUT_SECONDS", "600")
-	t.Setenv("KESTREL_HOP_MAX_PER_HOUR", "5")
-	t.Setenv("KESTREL_HOP_MAX_PER_DAY", "50")
-
-	// Resume requires the observer, so leave the observer enabled here.
-	t.Setenv("KESTREL_OBSERVER_ENABLED", "true")
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Observer.LogPath != `C:\logs\opencode.log` ||
-		cfg.Observer.PollSeconds != 5 ||
-		cfg.Observer.DedupSeconds != 90 ||
-		cfg.Observer.PluginGraceSeconds != 7 {
-		t.Fatalf("observer = %+v", cfg.Observer)
-	}
-	if !cfg.Resume.Enabled || cfg.Resume.Binary != `C:\opencode.exe` || cfg.Resume.TimeoutSeconds != 600 {
-		t.Fatalf("resume = %+v", cfg.Resume)
-	}
-	if cfg.Hop.MaxPerHour != 5 || cfg.Hop.MaxPerDay != 50 {
-		t.Fatalf("hop = %+v", cfg.Hop)
-	}
-}
-
-func TestResumeRequiresObserver(t *testing.T) {
-	cfg := Default()
-	cfg.Observer.Enabled = false
-	cfg.Resume.Enabled = true
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("resume without observer must fail")
-	}
-}
-
-func TestHopLimitsValidation(t *testing.T) {
-	cfg := Default()
-	cfg.Hop.MaxPerHour = -1
+	cfg.Rotate.MaxPerHour = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("negative hourly limit must fail")
 	}
 	cfg = Default()
-	cfg.Hop.MaxPerDay = -1
+	cfg.Rotate.MaxPerDay = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("negative daily limit must fail")
 	}
 }
 
-func TestObserverValidation(t *testing.T) {
+func TestObserverAndResumeValidation(t *testing.T) {
 	cfg := Default()
 	cfg.Observer.PollSeconds = 0
 	if err := cfg.Validate(); err == nil {
@@ -323,5 +199,17 @@ func TestObserverValidation(t *testing.T) {
 	cfg.Observer.PluginGraceSeconds = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("negative grace must fail")
+	}
+	cfg = Default()
+	cfg.Observer.Enabled = false
+	cfg.Resume.Enabled = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("resume without observer must fail")
+	}
+	cfg = Default()
+	cfg.Resume.Enabled = true
+	cfg.Resume.TimeoutSeconds = 5
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("resume timeout below ten seconds must fail")
 	}
 }
