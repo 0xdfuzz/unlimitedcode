@@ -553,20 +553,6 @@ exports.default = sdk.Plugin.define({
       )
     }
 
-    ctx.add(sdk.TitlebarItem, () => {
-      const s = summary()
-      const stateLabel = !s.online ? "OFFLINE" : s.paused ? "PAUSED" : "AUTO"
-      return {
-        id: "unlimited",
-        label: "unlimited",
-        title: `UnlimitedCode · ${stateLabel} (${s.ip})`,
-        icon: ctx.icons.dot,
-        run() {
-          void openStatsDialog()
-        },
-      }
-    })
-
     ctx.add(sdk.ComposerPill, {
       id: "status",
       order: 50,
@@ -623,6 +609,8 @@ exports.default = sdk.Plugin.define({
       title: "UnlimitedCode: Usage Stats",
       description: "Free-tier tokens, speed, savings & top models",
       group: "UnlimitedCode",
+      featured: true,
+      suggested: true,
       slash: { name: "unlimited-stats" },
       run() {
         void openStatsDialog()
@@ -634,6 +622,8 @@ exports.default = sdk.Plugin.define({
       title: "UnlimitedCode: Status & Controls",
       description: "Open UnlimitedCode stats, IP rotation & pause controls",
       group: "UnlimitedCode",
+      featured: true,
+      suggested: true,
       slash: { name: "unlimited" },
       run() {
         void openStatsDialog()
