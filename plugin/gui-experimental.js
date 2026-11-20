@@ -407,6 +407,11 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
       render()
     }
   }
+  // Prevent Kobalte's outside-click detector from closing the dialog when
+  // re-rendering detaches the clicked child element.
+  root.addEventListener("pointerdown", (e) => e.stopPropagation())
+  root.addEventListener("mousedown", (e) => e.stopPropagation())
+  root.addEventListener("click", (e) => e.stopPropagation())
   root.addEventListener("keydown", onKeyDown)
 
   const render = () => {
