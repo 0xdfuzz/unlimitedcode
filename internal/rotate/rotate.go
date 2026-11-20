@@ -61,6 +61,7 @@ type Result struct {
 
 type Stats struct {
 	Enabled        bool       `json:"enabled"`
+	Paused         bool       `json:"paused"`
 	Busy           bool       `json:"busy"`
 	Count          int64      `json:"count"`
 	Failures       int64      `json:"failures"`
@@ -73,16 +74,17 @@ type Stats struct {
 }
 
 type Manager struct {
-	gate  Gate
-	rec   Reconnector
-	opts  Options
-	log   Logger
-	now   func() time.Time
-	mu    sync.Mutex
-	run   *call
-	lastF time.Time
-	times []time.Time
-	stats Stats
+	gate   Gate
+	rec    Reconnector
+	opts   Options
+	log    Logger
+	now    func() time.Time
+	mu     sync.Mutex
+	paused bool
+	run    *call
+	lastF  time.Time
+	times  []time.Time
+	stats  Stats
 }
 
 type call struct {
@@ -128,6 +130,10 @@ func New(opts Options) (*Manager, error) {
 // a hop other sessions are waiting for.
 func (m *Manager) Hop(ctx context.Context, req Request) Result {
 	m.mu.Lock()
+	if m.paused && req.Reason != "manual" {
+		m.mu.Unlock()
+		return Result{Status: "paused", Error: "auto-rotate is paused"}
+	}
 	if running := m.run; running != nil {
 		m.stats.Coalesced++
 		m.mu.Unlock()
@@ -210,11 +216,25 @@ func (m *Manager) execute(req Request) Result {
 	return Result{Status: "ok", DurationMS: duration.Milliseconds()}
 }
 
+func (m *Manager) SetPaused(paused bool) {
+	m.mu.Lock()
+	m.paused = paused
+	m.mu.Unlock()
+	m.log.Printf("auto-rotate paused=%v", paused)
+}
+
+func (m *Manager) Paused() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.paused
+}
+
 func (m *Manager) Stats() Stats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	stats := m.stats
 	stats.Enabled = m.rec != nil
+	stats.Paused = m.paused
 	stats.Busy = m.run != nil
 	return stats
 }

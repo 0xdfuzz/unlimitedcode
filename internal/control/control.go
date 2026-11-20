@@ -54,6 +54,11 @@ type Hopper interface {
 	Stats() rotate.Stats
 }
 
+type Pauser interface {
+	SetPaused(bool)
+	Paused() bool
+}
+
 type Options struct {
 	Listen      string
 	Token       string
@@ -120,6 +125,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/status", s.auth(s.status))
 	mux.HandleFunc("/rotate", s.auth(s.hopHandler))
 	mux.HandleFunc("/hop", s.auth(s.hopHandler))
+	mux.HandleFunc("/pause", s.auth(s.pauseHandler))
 	mux.HandleFunc("/event", s.auth(s.eventHandler))
 	return mux
 }
@@ -224,6 +230,33 @@ func (s *Server) eventHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.opts.Activity.MarkPluginEvent()
 	s.runHop(w, r, ev, ev.Type)
+}
+
+type pausePayload struct {
+	Paused *bool `json:"paused,omitempty"`
+}
+
+func (s *Server) pauseHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pauser, ok := s.opts.Hop.(Pauser)
+	if !ok || pauser == nil {
+		writeJSON(w, map[string]any{"status": "disabled", "paused": false})
+		return
+	}
+	var p pausePayload
+	if err := decodeJSON(w, r, &p); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	next := !pauser.Paused()
+	if p.Paused != nil {
+		next = *p.Paused
+	}
+	pauser.SetPaused(next)
+	writeJSON(w, map[string]any{"status": "ok", "paused": next})
 }
 
 func (s *Server) runHop(w http.ResponseWriter, r *http.Request, ev event, reason string) {

@@ -25,6 +25,11 @@ func InstalledPath() string {
 	return filepath.Join(config.Home(), "kestrel.exe")
 }
 
+// CopyBinary installs a copy of self at dest using an atomic rename.
+func CopyBinary(self, dest string) error {
+	return copyBinary(self, dest)
+}
+
 // InstallAutostart copies the binary to the state home and writes a hidden
 // logon launcher in the user's Startup folder.
 func InstallAutostart(self string) (string, error) {
