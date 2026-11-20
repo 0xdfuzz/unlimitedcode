@@ -1,6 +1,6 @@
 # Binaries
-kestrel
-kestrel.exe
+/kestrel
+/kestrel.exe
 *.exe
 *.dll
 *.so
