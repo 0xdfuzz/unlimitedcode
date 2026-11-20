@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"unlimitedcode/internal/opencode"
@@ -34,15 +33,16 @@ func cmdSetup(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	official, err := opencode.Find()
-	if err != nil {
-		fatal(err)
+	official, _ := opencode.Find()
+	if official != "" {
+		label := official
+		if ver, err := opencode.Version(context.Background(), official); err == nil && ver != "" {
+			label += " (" + ver + ")"
+		}
+		fmt.Printf("official  %s\n", label)
+	} else {
+		fmt.Println("official  not on PATH (Desktop-only mode)")
 	}
-	label := official
-	if ver, err := opencode.Version(context.Background(), official); err == nil && ver != "" {
-		label += " (" + ver + ")"
-	}
-	fmt.Printf("official  %s\n", label)
 
 	if *dry {
 		if _, err := os.Stat(cfg.Path); os.IsNotExist(err) {
@@ -161,27 +161,26 @@ func cmdSetup(args []string) {
 	}
 	if *proxyFlag {
 		proxyURL := "http://" + cfg.Listen
-		values := [][2]string{
-			{"HTTPS_PROXY", proxyURL},
-			{"HTTP_PROXY", proxyURL},
-			{"NO_PROXY", "localhost,127.0.0.1,::1"},
-		}
-		for _, pair := range values {
-			if *dry {
-				fmt.Printf("proxy     would set %s=%s in the OpenCode service\n", pair[0], pair[1])
-				continue
+		if *dry {
+			fmt.Printf("proxy     would set HTTPS_PROXY/HTTP_PROXY=%s in OpenCode service config\n", proxyURL)
+		} else {
+			if _, err := setup.SetOpenCodeServiceEnv(proxyURL); err != nil {
+				fatal(fmt.Errorf("configure OpenCode service env: %w", err))
 			}
-			out, err := exec.Command(official, "service", "set", "env", pair[0], pair[1]).CombinedOutput()
-			if err != nil {
-				fatal(fmt.Errorf("service set env %s: %v: %s", pair[0], err, strings.TrimSpace(string(out))))
+			if official != "" {
+				for _, pair := range [][2]string{
+					{"HTTPS_PROXY", proxyURL},
+					{"HTTP_PROXY", proxyURL},
+					{"NO_PROXY", "localhost,127.0.0.1,::1"},
+				} {
+					_ = exec.Command(official, "service", "set", "env", pair[0], pair[1]).Run()
+				}
 			}
-		}
-		if !*dry {
 			fmt.Println("proxy     stored; restart OpenCode to apply")
 		}
 	}
 	if !*dry {
-		fmt.Println("next      UnlimitedCode doctor")
+		fmt.Println("next      unlimitedcode doctor")
 	}
 }
 

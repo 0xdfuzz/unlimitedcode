@@ -123,13 +123,13 @@ func Home() string {
 		}
 	}
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
-		return filepath.Join(v, "UnlimitedCode")
+		return filepath.Join(v, "unlimitedcode")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".UnlimitedCode"
+		return ".unlimitedcode"
 	}
-	return filepath.Join(home, ".local", "state", "UnlimitedCode")
+	return filepath.Join(home, ".local", "state", "unlimitedcode")
 }
 
 func ConfigPath() string { return filepath.Join(Home(), "config.json") }

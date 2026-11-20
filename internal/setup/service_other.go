@@ -12,12 +12,17 @@ import (
 )
 
 func InstalledPath() string {
-	return filepath.Join(config.Home(), "UnlimitedCode")
+	return filepath.Join(config.Home(), "unlimitedcode")
 }
 
 func CopyBinary(self, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		return err
+	}
+	if si, err := os.Stat(self); err == nil {
+		if di, err := os.Stat(dest); err == nil && os.SameFile(si, di) {
+			return nil
+		}
 	}
 	src, err := os.Open(self)
 	if err != nil {

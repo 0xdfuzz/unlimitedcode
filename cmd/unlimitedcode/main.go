@@ -53,17 +53,17 @@ func usage() {
 	fmt.Fprint(os.Stderr, `UnlimitedCode - local egress daemon for official OpenCode
 
 usage:
-  UnlimitedCode install   [flags]       install plugin & proxy for OpenCode (default when run with no args)
-  UnlimitedCode uninstall [--purge]     remove plugin, proxy env, and optionally state
-  UnlimitedCode daemon    [flags]       run the proxy, MASQUE pool and control server
-  UnlimitedCode status    [flags]       show daemon status
-  UnlimitedCode doctor    [flags]       check config, ports, egress, plugin and opencode
-  UnlimitedCode rotate    [flags]       request one egress rotation (alias: hop)
-  UnlimitedCode setup     [flags]       advanced setup (--takeover, --service, --dry-run)
-  UnlimitedCode env       [flags]       print proxy environment variables
-  UnlimitedCode plugin    install|uninstall|path
-  UnlimitedCode run       [flags] -- <command> [args...]
-  UnlimitedCode version
+  unlimitedcode install   [flags]       install plugin & proxy for OpenCode (default when run with no args)
+  unlimitedcode uninstall [--purge]     remove plugin, proxy env, and optionally state
+  unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control server
+  unlimitedcode status    [flags]       show daemon status
+  unlimitedcode doctor    [flags]       check config, ports, egress, plugin and opencode
+  unlimitedcode rotate    [flags]       request one egress rotation (alias: hop)
+  unlimitedcode setup     [flags]       advanced setup (--takeover, --service, --dry-run)
+  unlimitedcode env       [flags]       print proxy environment variables
+  unlimitedcode plugin    install|uninstall|path
+  unlimitedcode run       [flags] -- <command> [args...]
+  unlimitedcode version
 
 common flags:
   --config PATH                   config file (default: state home)
