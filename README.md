@@ -29,14 +29,11 @@ hosts (browser, `webfetch`, docs, localhost) pass through directly.
   OpenCode's `model.request` / `http.request` hooks without burning a clean IP
   or losing the current chat. Only swaps egress IPs if the IP itself is out of
   quota.
-- **Native OpenCode commands + local token stats**:
-  - `/unlimited` (`status` | `pause` | `resume` | `rotate`) — active IPv6,
-    MASQUE pool slots, rotation count, and runtime pause toggle.
-  - `/unlimited-stats` — 100% local read-only token stats from `opencode.db`
-    (24h / 7d / 30d / All time, Input / Output / Cache Read, Cache Hit %,
-    average `tok/s`, active streak, peak hour, and model breakdown — works
-    without an OpenCode account).
-  - `/rotate` — immediate `0ms` egress IP + session alias rotation.
+- **Native OpenCode TUI & Desktop UI + local token stats (`plugin/tui.tsx`, `plugin/gui-experimental.js`)**:
+  - `/unlimited` — interactive control menu & MASQUE pool inspector (active IPv6, slots, recycles, pause/resume, rotate).
+  - `/unlimited-stats` (alias `/ustats`) — 100% local read-only token stats modal from `opencode.db` with `24h` / `7d` / `30d` / `All` window switching, `Free` vs `All` model filter, `Est. Saved`, Cache Hit %, per-model `tok/s`, streak, and peak hour (zero LLM turn, works without an OpenCode account).
+  - `/rotate` — immediate `0ms` egress IP rotation with native toast feedback.
+  - Subtle clickable `unlimited` status indicator in both the TUI prompt footer and the Desktop session header.
 - **Split routing**: `opencode.ai` / `*.opencode.ai` always route fail-closed
   through the MASQUE pool; all other hosts pass through directly so agent web
   tools keep working.
