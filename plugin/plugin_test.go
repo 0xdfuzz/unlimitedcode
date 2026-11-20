@@ -8,7 +8,18 @@ import (
 )
 
 func TestInstallAndUninstall(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "plugin")
+	base := t.TempDir()
+	dir := filepath.Join(base, "plugins", PluginID)
+
+	// Seed a legacy single-file plugin to verify Install cleans it up.
+	legacyDir := filepath.Join(base, "plugin")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyFile := filepath.Join(legacyDir, legacyFilename)
+	if err := os.WriteFile(legacyFile, []byte("// legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	path, err := Install(dir)
 	if err != nil {
@@ -17,25 +28,22 @@ func TestInstallAndUninstall(t *testing.T) {
 	if path != filepath.Join(dir, Filename) {
 		t.Fatalf("path = %q", path)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(data, Source) {
-		t.Fatal("installed server plugin differs from embedded source")
+	if _, err := os.Stat(legacyFile); !os.IsNotExist(err) {
+		t.Fatalf("legacy plugin was not removed: %v", err)
 	}
 
-	tuiDir, err := TUIDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tuiPath := filepath.Join(tuiDir, TUIFilename)
-	tuiData, err := os.ReadFile(tuiPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(tuiData, TUISource) {
-		t.Fatal("installed tui plugin differs from embedded source")
+	for name, want := range map[string][]byte{
+		Filename:    Source,
+		TUIFilename: TUISource,
+		GUIFilename: GUISource,
+	} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !bytes.Equal(data, want) {
+			t.Fatalf("installed %s differs from embedded source", name)
+		}
 	}
 
 	again, err := Install(dir)
@@ -49,11 +57,8 @@ func TestInstallAndUninstall(t *testing.T) {
 	if err := Uninstall(dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("server plugin still present: %v", err)
-	}
-	if _, err := os.Stat(tuiDir); !os.IsNotExist(err) {
-		t.Fatalf("tui plugin dir still present: %v", err)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("plugin dir still present: %v", err)
 	}
 	if err := Uninstall(dir); err != nil {
 		t.Fatalf("second uninstall: %v", err)
@@ -66,9 +71,14 @@ func TestSourceHasContract(t *testing.T) {
 			t.Fatalf("server plugin source missing %q", want)
 		}
 	}
-	for _, want := range []string{`unlimited-stats`, `dialog.show`, `dialog.select`, `toast.show`, `Est. Saved`} {
+	for _, want := range []string{`unlimited-stats`, `dialog.show`, `dialog.select`, `toast.show`, `Est. Saved`, `prompt.footer`} {
 		if !bytes.Contains(TUISource, []byte(want)) {
 			t.Fatalf("tui plugin source missing %q", want)
+		}
+	}
+	for _, want := range []string{`ComposerPill`, `unlimitedcode.daemon`, `Rotate egress IP`} {
+		if !bytes.Contains(GUISource, []byte(want)) {
+			t.Fatalf("gui plugin source missing %q", want)
 		}
 	}
 }
@@ -80,7 +90,7 @@ func TestDirHonorsXDGConfigHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(xdg, "opencode", "plugin")
+	want := filepath.Join(xdg, "opencode", "plugins", PluginID)
 	if dir != want {
 		t.Fatalf("Dir() = %q, want %q", dir, want)
 	}

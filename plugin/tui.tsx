@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { createMemo, createSignal, For, Show } from "solid-js"
+import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const ROTATE_TIMEOUT_MS = 55_000
@@ -684,9 +684,62 @@ async function openStatusModal(context: any, status?: any): Promise<void> {
   } catch {}
 }
 
+function PromptBadge(props: { context: any; onClick: () => void }) {
+  const [state, setState] = createSignal<"auto" | "paused" | "offline">("auto")
+  const [hovered, setHovered] = createSignal(false)
+
+  const refresh = async () => {
+    const st = await controlCall("/status", "GET", undefined, 1_500)
+    if (!st) {
+      setState("offline")
+      return
+    }
+    setState(st.hop?.paused ? "paused" : "auto")
+  }
+
+  onMount(() => {
+    void refresh()
+    const timer = setInterval(() => {
+      void refresh()
+    }, 15_000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const theme = () => props.context.theme
+  const dot = () => (state() === "auto" ? "●" : state() === "paused" ? "⏸" : "○")
+  const dotColor = () =>
+    state() === "auto"
+      ? theme().text.feedback.success.base
+      : state() === "paused"
+        ? theme().text.feedback.warning.base
+        : theme().text.feedback.error.base
+
+  return (
+    <box
+      flexShrink={0}
+      onMouseOver={() => setHovered(true)}
+      onMouseOut={() => setHovered(false)}
+      onMouseUp={() => props.onClick()}
+    >
+      <text fg={hovered() ? theme().text.base : theme().text.muted} wrapMode="none">
+        <span style={{ fg: theme().text.muted }}>{"· "}</span>
+        <span style={{ fg: dotColor() }}>{dot()}</span>
+        {" unlimited"}
+      </text>
+    </box>
+  )
+}
+
 export default {
   id: "unlimitedcode",
   setup(context: any) {
+    context.ui.slot({
+      append: "prompt.footer",
+      render() {
+        return <PromptBadge context={context} onClick={() => context.keymap.dispatch("unlimitedcode.menu")} />
+      },
+    })
+
     context.ui.slot({
       append: "app",
       render() {
