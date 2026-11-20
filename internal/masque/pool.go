@@ -460,7 +460,10 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 
 		var nextCfg slotConfig
 		var err error
-		if prev.ID != "" && prev.AccessToken != "" {
+		// Try fast key re-enrollment first; if it fails or lands on a sticky/burnt
+		// /64 prefix (attempt >= 2), register a brand-new WARP device ID so
+		// Cloudflare allocates a fresh IPv6 /64 pool.
+		if attempt == 1 && prev.ID != "" && prev.AccessToken != "" {
 			nextCfg, err = enrollNewKey(ctx, prev)
 		} else {
 			nextCfg, err = registerAndEnroll(ctx)
@@ -610,7 +613,7 @@ func (p *Pool) resolveIPv6Target(ctx context.Context, addr string) string {
 }
 
 func lookupAAAA(ctx context.Context, host string) string {
-	rctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if ips, err := net.DefaultResolver.LookupIP(rctx, "ip6", host); err == nil {
 		for _, ip := range ips {
@@ -619,37 +622,44 @@ func lookupAAAA(ctx context.Context, host string) string {
 			}
 		}
 	}
-	dohURL := "https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=AAAA"
-	req, err := http.NewRequestWithContext(rctx, http.MethodGet, dohURL, nil)
-	if err != nil {
-		return ""
+	dohEndpoints := []string{
+		"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=AAAA",
+		"https://dns.google/resolve?name=" + url.QueryEscape(host) + "&type=AAAA",
 	}
-	req.Header.Set("Accept", "application/dns-json")
 	client := &http.Client{
 		Timeout:   2 * time.Second,
 		Transport: &http.Transport{Proxy: nil},
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	var payload struct {
-		Answer []struct {
-			Type int    `json:"type"`
-			Data string `json:"data"`
-		} `json:"Answer"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&payload); err != nil {
-		return ""
-	}
-	for _, ans := range payload.Answer {
-		if ans.Type == 28 {
-			if parsed, err := netip.ParseAddr(strings.TrimSpace(ans.Data)); err == nil && parsed.Is6() {
-				return parsed.String()
+	for _, dohURL := range dohEndpoints {
+		req, err := http.NewRequestWithContext(rctx, http.MethodGet, dohURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Accept", "application/dns-json")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+		var payload struct {
+			Answer []struct {
+				Type int    `json:"type"`
+				Data string `json:"data"`
+			} `json:"Answer"`
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&payload)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		for _, ans := range payload.Answer {
+			if ans.Type == 28 {
+				if parsed, err := netip.ParseAddr(strings.TrimSpace(ans.Data)); err == nil && parsed.Is6() {
+					return parsed.String()
+				}
 			}
 		}
 	}

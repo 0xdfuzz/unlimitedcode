@@ -121,7 +121,6 @@ type cfAccountResp struct {
 var (
 	regMu     sync.Mutex
 	lastRegAt time.Time
-	masquePorts = []int{443, 8443, 4500, 500, 1701}
 )
 
 // registerAndEnroll creates a new Cloudflare WARP device and immediately
@@ -376,12 +375,11 @@ type l4Client struct {
 	quicConfig *quic.Config
 	endpoints  []*net.UDPAddr
 
-	mu          sync.Mutex
-	endpointIdx int
-	udpConn     *net.UDPConn
-	quicConn    *quic.Conn
-	clientConn  *http3.ClientConn
-	closed      bool
+	mu         sync.Mutex
+	udpConn    *net.UDPConn
+	quicConn   *quic.Conn
+	clientConn *http3.ClientConn
+	closed     bool
 }
 
 func newL4Client(cfg slotConfig) (*l4Client, error) {
@@ -389,21 +387,15 @@ func newL4Client(cfg slotConfig) (*l4Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ips []net.IP
+	var endpoints []*net.UDPAddr
 	if ip4 := net.ParseIP(cfg.EndpointV4); ip4 != nil {
-		ips = append(ips, ip4)
+		endpoints = append(endpoints, &net.UDPAddr{IP: ip4, Port: defaultMASQUEPort})
 	}
 	if ip6 := net.ParseIP(cfg.EndpointV6); ip6 != nil {
-		ips = append(ips, ip6)
+		endpoints = append(endpoints, &net.UDPAddr{IP: ip6, Port: defaultMASQUEPort})
 	}
-	if len(ips) == 0 {
+	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("invalid MASQUE endpoint IPs v4=%q v6=%q", cfg.EndpointV4, cfg.EndpointV6)
-	}
-	var endpoints []*net.UDPAddr
-	for _, port := range masquePorts {
-		for _, ip := range ips {
-			endpoints = append(endpoints, &net.UDPAddr{IP: ip, Port: port})
-		}
 	}
 	return &l4Client{
 		tlsConfig: tlsCfg,
@@ -513,23 +505,41 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		c.mu.Unlock()
 	}
 
-	c.mu.Lock()
-	ep := c.endpoints[c.endpointIdx%len(c.endpoints)]
-	c.mu.Unlock()
-
-	udpConn, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return nil, nil, err
+	var (
+		udpConn  *net.UDPConn
+		quicConn *quic.Conn
+		lastErr  error
+	)
+	for _, ep := range c.endpoints {
+		netName := "udp4"
+		bindAddr := &net.UDPAddr{IP: net.IPv4zero}
+		if ep.IP.To4() == nil {
+			netName = "udp6"
+			bindAddr = &net.UDPAddr{IP: net.IPv6zero}
+		}
+		uc, err := net.ListenUDP(netName, bindAddr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// ConnectionIDLength=20 avoids Cloudflare MASQUE PROTOCOL_VIOLATION disconnects.
+		tr := &quic.Transport{Conn: uc, ConnectionIDLength: 20}
+		qc, err := tr.Dial(ctx, ep, c.tlsConfig, c.quicConfig)
+		if err != nil {
+			_ = uc.Close()
+			lastErr = err
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			continue
+		}
+		udpConn = uc
+		quicConn = qc
+		lastErr = nil
+		break
 	}
-	// ConnectionIDLength=20 avoids Cloudflare MASQUE PROTOCOL_VIOLATION disconnects.
-	tr := &quic.Transport{Conn: udpConn, ConnectionIDLength: 20}
-	quicConn, err := tr.Dial(ctx, ep, c.tlsConfig, c.quicConfig)
-	if err != nil {
-		_ = udpConn.Close()
-		c.mu.Lock()
-		c.endpointIdx = (c.endpointIdx + 1) % len(c.endpoints)
-		c.mu.Unlock()
-		return nil, nil, err
+	if lastErr != nil {
+		return nil, nil, lastErr
 	}
 	h3 := (&http3.Transport{}).NewClientConn(quicConn)
 

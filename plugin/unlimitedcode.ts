@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
-const MAX_ATTEMPTS = 4
+const MAX_ATTEMPTS = 6
 const ROTATE_TIMEOUT_MS = 55_000
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -272,7 +272,7 @@ async function setup(ctx: any): Promise<void> {
     const attempt = Number(event?.attempt ?? 1)
     if (attempt > MAX_ATTEMPTS) return { retry: false, delay: 0 }
 
-    if (sid && attempt <= 2) {
+    if (sid && attempt === 1) {
       rotateSessionAlias(sid)
       const decision = { retry: true, delay: 0 }
       event.decision = decision
