@@ -22,7 +22,20 @@ func TestInstallAndUninstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(data, Source) {
-		t.Fatal("installed plugin differs from embedded source")
+		t.Fatal("installed server plugin differs from embedded source")
+	}
+
+	tuiDir, err := TUIDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuiPath := filepath.Join(tuiDir, TUIFilename)
+	tuiData, err := os.ReadFile(tuiPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(tuiData, TUISource) {
+		t.Fatal("installed tui plugin differs from embedded source")
 	}
 
 	again, err := Install(dir)
@@ -37,7 +50,10 @@ func TestInstallAndUninstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("plugin still present: %v", err)
+		t.Fatalf("server plugin still present: %v", err)
+	}
+	if _, err := os.Stat(tuiDir); !os.IsNotExist(err) {
+		t.Fatalf("tui plugin dir still present: %v", err)
 	}
 	if err := Uninstall(dir); err != nil {
 		t.Fatalf("second uninstall: %v", err)
@@ -47,7 +63,12 @@ func TestInstallAndUninstall(t *testing.T) {
 func TestSourceHasContract(t *testing.T) {
 	for _, want := range []string{`hook("retry"`, "provider.free-limit", "control.token", `"/event"`} {
 		if !bytes.Contains(Source, []byte(want)) {
-			t.Fatalf("plugin source missing %q", want)
+			t.Fatalf("server plugin source missing %q", want)
+		}
+	}
+	for _, want := range []string{`unlimited-stats`, `dialog.alert`, `dialog.select`, `toast.show`} {
+		if !bytes.Contains(TUISource, []byte(want)) {
+			t.Fatalf("tui plugin source missing %q", want)
 		}
 	}
 }

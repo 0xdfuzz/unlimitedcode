@@ -1,5 +1,4 @@
-// Package plugin ships the OpenCode retry bridge. The daemon works without it;
-// the plugin only removes the visible 429 by asking the daemon for a hop.
+// Package plugin ships the OpenCode server retry bridge and native TUI commands.
 package plugin
 
 import (
@@ -13,9 +12,16 @@ import (
 //go:embed unlimitedcode.ts
 var Source []byte
 
-const Filename = "unlimitedcode.ts"
+//go:embed tui.ts
+var TUISource []byte
 
-// Dir is the global OpenCode plugin directory. OpenCode follows
+const (
+	Filename    = "unlimitedcode.ts"
+	TUIFilename = "tui.ts"
+	PluginID    = "unlimitedcode"
+)
+
+// Dir is the global OpenCode server plugin directory. OpenCode follows
 // XDG_CONFIG_HOME when it is set and falls back to ~/.config.
 func Dir() (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
@@ -26,6 +32,26 @@ func Dir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".config", "opencode", "plugin"), nil
+}
+
+// TUIDir returns the OpenCode V2 TUI plugin directory sibling to the server plugin dir
+// (~/.config/opencode/plugins/unlimitedcode).
+func TUIDir(serverDir string) (string, error) {
+	if serverDir == "" {
+		var err error
+		serverDir, err = Dir()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(filepath.Dir(serverDir), "plugins", PluginID), nil
+}
+
+func writeIfChanged(path string, content []byte) error {
+	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, content) {
+		return nil
+	}
+	return os.WriteFile(path, content, 0o600)
 }
 
 func Install(dir string) (string, error) {
@@ -39,14 +65,24 @@ func Install(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create plugin dir: %w", err)
 	}
-	path := filepath.Join(dir, Filename)
-	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, Source) {
-		return path, nil
+	serverPath := filepath.Join(dir, Filename)
+	if err := writeIfChanged(serverPath, Source); err != nil {
+		return "", fmt.Errorf("write server plugin: %w", err)
 	}
-	if err := os.WriteFile(path, Source, 0o600); err != nil {
-		return "", fmt.Errorf("write plugin: %w", err)
+
+	tuiDir, err := TUIDir(dir)
+	if err != nil {
+		return "", err
 	}
-	return path, nil
+	if err := os.MkdirAll(tuiDir, 0o700); err != nil {
+		return "", fmt.Errorf("create tui plugin dir: %w", err)
+	}
+	tuiPath := filepath.Join(tuiDir, TUIFilename)
+	if err := writeIfChanged(tuiPath, TUISource); err != nil {
+		return "", fmt.Errorf("write tui plugin: %w", err)
+	}
+
+	return serverPath, nil
 }
 
 func Uninstall(dir string) error {
@@ -57,9 +93,15 @@ func Uninstall(dir string) error {
 			return err
 		}
 	}
-	err := os.Remove(filepath.Join(dir, Filename))
-	if os.IsNotExist(err) {
-		return nil
+	if err := os.Remove(filepath.Join(dir, Filename)); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	return err
+	tuiDir, err := TUIDir(dir)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(tuiDir); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
