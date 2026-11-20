@@ -3,11 +3,11 @@
 Engineering rules and architecture contract for **UnlimitedCode**.
 
 ## 1. Package Map
-- `cmd/unlimitedcode/`: CLI entrypoint split by command (`main.go`, `daemon.go`, `setup.go`, `status.go`, `run.go`).
+- `cmd/unlimitedcode/`: CLI entrypoint split by command (`main.go`, `daemon.go`, `install.go`, `setup.go`, `status.go`, `run.go`, `parent_windows.go`, `parent_other.go`).
 - `internal/masque/`: in-process Cloudflare WARP MASQUE L4 client (`client.go`) and warm rotation pool (`pool.go`) with IPv6-first DoH resolution and burned-prefix tracking.
 - `internal/proxy/`: transparent HTTP `CONNECT` proxy with split routing (routed hosts via MASQUE egress, other hosts via direct passthrough when enabled) and pause/close gate for clean rotation.
-- `internal/rotate/`: single-flight rotation coordinator with failure cooldown and rolling hourly/daily budgets.
-- `internal/control/`: loopback-only authenticated HTTP control API (`/health`, `/status`, `/rotate`, `/event`).
+- `internal/rotate/`: single-flight rotation coordinator with runtime pause toggle, failure cooldown, and rolling hourly/daily budgets.
+- `internal/control/`: loopback-only authenticated HTTP control API (`/health`, `/status`, `/rotate`, `/pause`, `/event`).
 - `internal/config/`: JSON config loading, defaults, env overrides, and validation.
 - `internal/observer/`: OpenCode service log tail fallback when the plugin is absent.
 - `internal/resume/`: opt-in `opencode run --session <id> continue` fallback.

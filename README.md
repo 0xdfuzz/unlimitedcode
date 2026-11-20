@@ -1,86 +1,100 @@
 # UnlimitedCode
 
-Single-binary local egress daemon for the official OpenCode client. One Go
-executable, embedded in-process Cloudflare WARP MASQUE pool, zero external
-binaries, zero `app.asar` patches, zero database writes, no PATH shims.
+Single-binary local egress plugin & in-process Cloudflare WARP MASQUE pool for
+the official OpenCode client. One Go executable (~9.5 MB), zero external
+binaries, zero `app.asar` patches, zero database writes, no PATH shims, and no
+logon autostart required.
 
-UnlimitedCode exposes a loopback HTTP `CONNECT` proxy: `opencode.ai` traffic is
-forwarded over in-process HTTP/3 MASQUE tunnels (`quic-go`), while other hosts
-(browser/webfetch/docs) pass through directly. OpenCode keeps full ownership of
-TLS, headers, prompts, and the free-tier gate; UnlimitedCode rotates wire session IDs
-on per-session limits and swaps warm IPv6 `/64` egress slots in `0ms` when an
-IP hits quota.
+UnlimitedCode lives inside OpenCode as a native Plugin V2 extension: when you
+open OpenCode, the plugin starts the local daemon on demand (tied to OpenCode's
+PID so it exits automatically when OpenCode closes). `opencode.ai` traffic is
+forwarded over in-process HTTP/3 MASQUE tunnels (`quic-go`), while all other
+hosts (browser, `webfetch`, docs, localhost) pass through directly.
 
 ## Highlights
 
-- **Single binary (`UnlimitedCode`, ~9.5 MB)**: embedded MASQUE L4 client
+- **Single binary (`unlimitedcode`, ~9.5 MB)**: embedded MASQUE L4 client
   (`internal/masque`) with only `quic-go` outside Go's standard library. No
   `warp-cli`, no `warp-svc`, no TUN driver, no admin rights.
-- **Instant (`0ms`) egress rotation**: keeps a warm pool (default 2 slots) on
-  distinct IPv6 `/64` prefixes (IPv6-first via OS DNS + Cloudflare DoH). On
-  rotation, UnlimitedCode swaps immediately to a warm slot and recycles the burned
-  slot asynchronously via key re-enrollment, blacklisting burned `/64` prefixes
-  until the daily `01:05 UTC` reset.
-- **Session-first retry plugin (`plugin/unlimitedcode.ts`)**: on the first
+- **Plugin-first lifecycle**: no tray icon, no boot autostart needed. OpenCode
+  starts `unlimitedcode daemon --parent-pid <pid>` on demand and the daemon
+  exits cleanly when OpenCode closes.
+- **Instant (`0ms`) IPv6 `/64` rotation**: keeps a warm pool (default 2 slots)
+  on distinct IPv6 `/64` prefixes (IPv6-first via OS DNS + Cloudflare DoH). On
+  rotation, swaps immediately to a warm slot and recycles the burned slot
+  asynchronously via key re-enrollment, blacklisting burned `/64` prefixes until
+  the daily `01:05 UTC` reset.
+- **Session-first invisible retry (`plugin/unlimitedcode.ts`)**: on the first
   `provider.free-limit` 429, rotates the wire `ses_...` header in place via
-  OpenCode's Plugin V2 hooks (`model.request` / `http.request`) without burning
-  a clean egress IP or losing the current chat. Only requests an egress
-  rotation if the IP itself is out of quota.
+  OpenCode's `model.request` / `http.request` hooks without burning a clean IP
+  or losing the current chat. Only swaps egress IPs if the IP itself is out of
+  quota.
+- **Native OpenCode commands + local token stats**:
+  - `/unlimited` (`status` | `pause` | `resume` | `rotate`) — active IPv6,
+    MASQUE pool slots, rotation count, and runtime pause toggle.
+  - `/unlimited-stats` — 100% local read-only token stats from `opencode.db`
+    (24h / 7d / 30d / All time, Input / Output / Cache Read, Cache Hit %,
+    average `tok/s`, active streak, peak hour, and model breakdown — works
+    without an OpenCode account).
+  - `/rotate` — immediate `0ms` egress IP + session alias rotation.
 - **Split routing**: `opencode.ai` / `*.opencode.ai` always route fail-closed
-  through the MASQUE pool; non-OpenCode hosts pass through directly so agent
-  web tools keep working.
+  through the MASQUE pool; all other hosts pass through directly so agent web
+  tools keep working.
 - **Loopback security**: strict `127.0.0.1` bind, 32-byte random bearer token
   on the control API with constant-time comparison and `Host` validation.
 
-## Build
+## Install (Quick Start)
+
+Download the latest release binary for your OS from **Releases**, then run it:
+
+- **Windows:** double-click `unlimitedcode.exe` (or run `.\unlimitedcode.exe`)
+  and pick **`[1] Install`**.
+- **Linux / macOS:**
+  ```sh
+  chmod +x unlimitedcode
+  ./unlimitedcode install
+  ```
+
+Restart OpenCode and use `/unlimited`, `/unlimited-stats`, or `/rotate`.
+
+Running `unlimitedcode.exe` again opens the maintenance menu (`Repair /
+Reinstall`, `Status & Diagnostics`, `Uninstall`). To uninstall from the CLI:
+
+```sh
+unlimitedcode uninstall --purge
+```
+
+## Build from Source
 
 Requires Go 1.25 or newer.
 
 ```sh
 go vet ./...
 go test ./...
-go build -trimpath -ldflags "-s -w -X main.version=0.2.0" -o unlimitedcode.exe ./cmd/unlimitedcode
+go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o unlimitedcode.exe ./cmd/unlimitedcode
 ```
 
-## Quick Start
-
-```sh
-# Write default config, install the OpenCode plugin, configure proxy env & autostart (Windows)
-UnlimitedCode setup --service --proxy
-
-# Verify health & active pool slots
-UnlimitedCode doctor
-UnlimitedCode status
-
-# Trigger a manual 0ms rotation
-UnlimitedCode rotate
-```
-
-Coming from an existing `openhop` shim on Windows:
-
-```sh
-UnlimitedCode setup --takeover --service --proxy
-```
-
-## Commands
+## CLI Commands
 
 ```text
-UnlimitedCode daemon   [flags]        run the proxy, MASQUE pool and control server
-UnlimitedCode status   [flags] [--json]
-UnlimitedCode doctor   [flags]        verify config, ports, egress, plugin and opencode
-UnlimitedCode setup    [flags]        write config, install plugin, optional service/proxy
-UnlimitedCode rotate   [flags] [--json]
-UnlimitedCode env      [flags] [--format plain|powershell|json]
-UnlimitedCode plugin   install|uninstall|path [--dir DIR]
-UnlimitedCode run      [flags] -- <command> [args...]
-UnlimitedCode version
+unlimitedcode install   [flags]       install binary, plugin & OpenCode proxy env
+unlimitedcode uninstall [--purge]     remove plugin, proxy env, and optionally state
+unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control server
+unlimitedcode status    [flags] [--json]
+unlimitedcode doctor    [flags]       check config, ports, egress, plugin and opencode
+unlimitedcode rotate    [flags] [--json]
+unlimitedcode setup     [flags]       advanced setup (--takeover, --service, --dry-run)
+unlimitedcode env       [flags] [--format plain|powershell|json]
+unlimitedcode plugin    install|uninstall|path [--dir DIR]
+unlimitedcode run       [flags] -- <command> [args...]
+unlimitedcode version
 ```
 
 ## Configuration
 
 State directory:
 - **Windows:** `%LOCALAPPDATA%\UnlimitedCode`
-- **Linux/macOS:** `$XDG_STATE_HOME/UnlimitedCode` or `~/.local/state/UnlimitedCode`
+- **Linux/macOS:** `$XDG_STATE_HOME/unlimitedcode` or `~/.local/state/unlimitedcode`
 
 Key settings (`config.json`, see [config.example.json](config.example.json)):
 - `egress.mode`: `masque` (default, embedded WARP MASQUE pool), `http-connect`, or `direct`.
