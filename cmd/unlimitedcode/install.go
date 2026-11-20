@@ -77,28 +77,36 @@ func cmdInstall(args []string, interactive bool) {
 		}
 	}
 
+	fail := func(err error) {
+		fmt.Fprintf(os.Stderr, "UnlimitedCode: %v\n", err)
+		if interactive {
+			pauseIfWindows()
+		}
+		os.Exit(1)
+	}
+
 	cfg, err := o.load(fs)
 	if err != nil {
-		fatal(err)
+		fail(err)
 	}
 	official, err := opencode.Find()
 	if err != nil {
-		fatal(fmt.Errorf("OpenCode not found: %w (install OpenCode first)", err))
+		fail(fmt.Errorf("OpenCode not found: %w (install OpenCode first)", err))
 	}
 
 	self, err := os.Executable()
 	if err != nil {
-		fatal(err)
+		fail(err)
 	}
 	installedBin := setup.InstalledPath()
 	if err := setup.CopyBinary(self, installedBin); err != nil {
-		fatal(fmt.Errorf("install binary: %w", err))
+		fail(fmt.Errorf("install binary: %w", err))
 	}
 	fmt.Printf("binary    %s\n", installedBin)
 
 	cfgPath, created, err := setup.EnsureConfig(cfg.Path)
 	if err != nil {
-		fatal(err)
+		fail(err)
 	}
 	state := "existing"
 	if created {
@@ -108,7 +116,7 @@ func cmdInstall(args []string, interactive bool) {
 
 	pluginPath, err := plugin.Install("")
 	if err != nil {
-		fatal(err)
+		fail(err)
 	}
 	fmt.Printf("plugin    %s\n", pluginPath)
 
@@ -119,7 +127,7 @@ func cmdInstall(args []string, interactive bool) {
 		{"NO_PROXY", "localhost,127.0.0.1,::1"},
 	} {
 		if out, err := exec.Command(official, "service", "set", "env", pair[0], pair[1]).CombinedOutput(); err != nil {
-			fatal(fmt.Errorf("service set env %s: %v: %s", pair[0], err, strings.TrimSpace(string(out))))
+			fail(fmt.Errorf("service set env %s: %v: %s", pair[0], err, strings.TrimSpace(string(out))))
 		}
 	}
 	fmt.Printf("proxy     %s (OpenCode service env)\n", proxyURL)
@@ -127,7 +135,7 @@ func cmdInstall(args []string, interactive bool) {
 	if *autostart {
 		vbs, err := setup.InstallAutostart(self)
 		if err != nil {
-			fatal(err)
+			fail(err)
 		}
 		fmt.Printf("autostart %s\n", vbs)
 	}

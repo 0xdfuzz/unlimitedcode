@@ -103,7 +103,19 @@ func copyBinary(self, dest string) error {
 		return err
 	}
 	if err := os.Rename(tmpName, dest); err != nil {
-		return fmt.Errorf("replace %s (stop the daemon first): %w", dest, err)
+		// Windows allows renaming a running executable aside even though it
+		// blocks overwriting it in place. Move the live binary to .old, swap
+		// the new one in, and best-effort remove .old.
+		oldPath := dest + ".old"
+		_ = os.Remove(oldPath)
+		if rerr := os.Rename(dest, oldPath); rerr != nil {
+			return fmt.Errorf("replace %s (stop the daemon first): %w", dest, err)
+		}
+		if err2 := os.Rename(tmpName, dest); err2 != nil {
+			_ = os.Rename(oldPath, dest)
+			return fmt.Errorf("replace %s: %w", dest, err2)
+		}
+		_ = os.Remove(oldPath)
 	}
 	return nil
 }
