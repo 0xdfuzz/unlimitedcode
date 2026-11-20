@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -242,13 +241,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	routedViaEgress := config.HostAllowed(host, s.opts.Allow)
-	if !routedViaEgress {
-		if !s.opts.Passthrough || isPrivateOrLoopbackHost(host) {
-			s.denied.Add(1)
-			s.event("deny authority=%s reason=host", authority)
-			http.Error(w, "host denied", http.StatusForbidden)
-			return
-		}
+	if !routedViaEgress && !s.opts.Passthrough {
+		s.denied.Add(1)
+		s.event("deny authority=%s reason=host", authority)
+		http.Error(w, "host denied", http.StatusForbidden)
+		return
 	}
 
 	if routedViaEgress {
@@ -272,7 +269,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	dialer := s.opts.Dialer
 	if !routedViaEgress {
-		dialer = safeDirectDialer{timeout: s.opts.DialTimeout}
+		dialer = upstream.Direct{Timeout: s.opts.DialTimeout}
 	}
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), s.opts.DialTimeout)
@@ -412,50 +409,6 @@ func (c idleConn) Read(p []byte) (int, error) {
 func (c idleConn) Write(p []byte) (int, error) {
 	c.Conn.SetWriteDeadline(time.Now().Add(c.idle))
 	return c.Conn.Write(p)
-}
-
-type safeDirectDialer struct {
-	timeout time.Duration
-}
-
-func (d safeDirectDialer) Name() string { return "direct-passthrough" }
-
-func (d safeDirectDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	if err != nil {
-		return nil, err
-	}
-	for _, ip := range ips {
-		if isBlockedAddr(ip) {
-			return nil, fmt.Errorf("passthrough blocked private/loopback IP %s for %s", ip, host)
-		}
-	}
-	nd := net.Dialer{Timeout: d.timeout}
-	return nd.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
-}
-
-func isPrivateOrLoopbackHost(host string) bool {
-	if host == "localhost" || host == "localhost." {
-		return true
-	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		return isBlockedAddr(addr)
-	}
-	return false
-}
-
-func isBlockedAddr(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	return addr.IsLoopback() ||
-		addr.IsPrivate() ||
-		addr.IsLinkLocalUnicast() ||
-		addr.IsLinkLocalMulticast() ||
-		addr.IsMulticast() ||
-		addr.IsUnspecified()
 }
 
 
