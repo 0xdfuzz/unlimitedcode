@@ -327,6 +327,7 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
   const root = document.createElement("div")
   root.tabIndex = -1
   root.style.cssText = [
+    "pointer-events:auto",
     "background:var(--surface-raised-stronger-non-alpha,var(--background-base,#141417))",
     "border:1px solid var(--border-weak-base,rgba(255,255,255,0.12))",
     "border-radius:12px",
