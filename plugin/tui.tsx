@@ -732,13 +732,14 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
   })
 
   const theme = () => props.context.theme
-  const dot = () => (state() === "auto" ? "●" : state() === "paused" ? "⏸" : "○")
-  const dotColor = () =>
-    state() === "auto"
-      ? theme().text.feedback.success.base
-      : state() === "paused"
-        ? theme().text.feedback.warning.base
-        : theme().text.feedback.error.base
+  const labelColor = () =>
+    hovered()
+      ? theme().text.base
+      : state() === "auto"
+        ? theme().text.feedback.success.base
+        : state() === "paused"
+          ? theme().text.feedback.warning.base
+          : theme().text.feedback.error.base
 
   return (
     <box
@@ -747,10 +748,9 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
       onMouseOut={() => setHovered(false)}
       onMouseUp={() => props.onClick()}
     >
-      <text fg={hovered() ? theme().text.base : theme().text.muted} wrapMode="none">
+      <text fg={labelColor()} wrapMode="none">
         <span style={{ fg: theme().text.muted }}>{"· "}</span>
-        <span style={{ fg: dotColor() }}>{dot()}</span>
-        {" unlimited"}
+        {"unlimited"}
       </text>
     </box>
   )

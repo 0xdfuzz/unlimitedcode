@@ -562,7 +562,6 @@ exports.default = sdk.Plugin.define({
         const stateLabel = !s.online ? "OFFLINE" : s.paused ? "PAUSED" : "AUTO"
         return {
           label: "unlimited",
-          icon: ctx.icons.dot,
           tone,
           title: `UnlimitedCode · ${stateLabel}`,
           rows: [
