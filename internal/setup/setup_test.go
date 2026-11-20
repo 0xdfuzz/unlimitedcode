@@ -11,14 +11,15 @@ import (
 
 func TestStripOpenhop(t *testing.T) {
 	separator := string(os.PathListSeparator)
+	npmDir := filepath.Join("demo", "AppData", "Roaming", "npm")
 	input := strings.Join([]string{
-		`C:\Users\demo\AppData\Local\openhop\bin`,
-		`C:\Users\demo\AppData\Roaming\npm`,
-		`C:\tools\OpenHop\bin`,
+		filepath.Join("demo", "AppData", "Local", "openhop", "bin"),
+		npmDir,
+		filepath.Join("tools", "OpenHop", "bin"),
 	}, separator)
 	got, removed := StripOpenhop(input)
-	if got != `C:\Users\demo\AppData\Roaming\npm` {
-		t.Fatalf("kept %q", got)
+	if got != npmDir {
+		t.Fatalf("kept %q, want %q", got, npmDir)
 	}
 	if len(removed) != 2 {
 		t.Fatalf("removed %v", removed)
@@ -28,8 +29,8 @@ func TestStripOpenhop(t *testing.T) {
 func TestStripOpenhopKeepsSibling(t *testing.T) {
 	separator := string(os.PathListSeparator)
 	value := strings.Join([]string{
-		`C:\tools\openhopkit\bin`,
-		`C:\tools\openhop\bin`,
+		filepath.Join("tools", "openhopkit", "bin"),
+		filepath.Join("tools", "openhop", "bin"),
 	}, separator)
 	got, removed := StripOpenhop(value)
 	if !strings.Contains(got, "openhopkit") {
