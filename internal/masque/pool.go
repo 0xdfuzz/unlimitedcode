@@ -79,8 +79,9 @@ type slot struct {
 }
 
 type aaaaEntry struct {
-	ip      string
-	expires time.Time
+	ip         string
+	expires    time.Time
+	refreshing bool
 }
 
 type Pool struct {
@@ -144,89 +145,103 @@ func NewPool(opts Options) (*Pool, error) {
 	return p, nil
 }
 
-// Start loads or registers slot credentials and verifies each slot's IPv6 WARP
-// egress in parallel.
+// Start boots all pool slots in parallel and returns as soon as the first slot
+// is verified ready so the local proxy accepts traffic immediately. Remaining
+// spare slots finish booting and deduplicating their /64 prefix in the background.
 func (p *Pool) Start(ctx context.Context) error {
-	var wg sync.WaitGroup
-	readyCh := make(chan int, p.size)
-	errCh := make(chan error, p.size)
+	// Pre-warm IPv6 AAAA records in parallel with slot boot so the first prompt
+	// never stalls waiting on cold OS/DoH DNS resolution.
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		warmCtx, cancel := context.WithTimeout(p.ctx, 4*time.Second)
+		defer cancel()
+		_ = p.resolveIPv6Target(warmCtx, "opencode.ai:443")
+	}()
+
+	var (
+		bootWG     sync.WaitGroup
+		firstOnce  sync.Once
+		firstReady = make(chan int, 1)
+		errMu      sync.Mutex
+		bootErrs   []string
+	)
 
 	for _, s := range p.slots {
-		wg.Add(1)
+		bootWG.Add(1)
+		p.wg.Add(1)
 		go func(sl *slot) {
-			defer wg.Done()
-			if err := p.bootSlot(ctx, sl); err != nil {
+			defer bootWG.Done()
+			defer p.wg.Done()
+
+			slotCtx, slotCancel := context.WithTimeout(p.ctx, 45*time.Second)
+			err := p.bootSlot(slotCtx, sl)
+			slotCancel()
+			if err != nil {
 				p.log.Printf("masque slot=%d boot failed: %v", sl.id, err)
-				errCh <- fmt.Errorf("slot %d: %w", sl.id, err)
+				errMu.Lock()
+				bootErrs = append(bootErrs, fmt.Sprintf("slot %d: %v", sl.id, err))
+				errMu.Unlock()
 				return
 			}
-			readyCh <- sl.id
+
+			becameActive := false
+			firstOnce.Do(func() {
+				p.mu.Lock()
+				p.active = sl.id
+				p.mu.Unlock()
+				becameActive = true
+				firstReady <- sl.id
+			})
+			if becameActive {
+				return
+			}
+
+			// Spare slot finished: if it landed on the same /64 prefix as the active
+			// slot, recycle it in the background so the first rotation is instant.
+			active := p.activeSlot()
+			active.mu.Lock()
+			activePrefix := active.prefix
+			active.mu.Unlock()
+			sl.mu.Lock()
+			dup := activePrefix != "" && sl.state == "ready" && sl.prefix == activePrefix
+			sl.mu.Unlock()
+			if dup {
+				p.log.Printf("masque slot=%d shares prefix %s with active slot=%d; recycling in background", sl.id, activePrefix, active.id)
+				bgCtx, bgCancel := context.WithTimeout(p.ctx, 45*time.Second)
+				defer bgCancel()
+				_ = p.recycleSlot(bgCtx, sl, activePrefix)
+			}
 		}(s)
 	}
 
-	done := make(chan struct{})
+	allDone := make(chan struct{})
 	go func() {
-		wg.Wait()
-		close(done)
+		bootWG.Wait()
+		close(allDone)
 	}()
 
 	select {
-	case <-done:
+	case activeID := <-firstReady:
+		p.log.Printf("masque in-process pool ready active=%d (warming %d total slots)", activeID, p.size)
+		return nil
+	case <-allDone:
+		// Either one slot won firstReady simultaneously or every slot failed.
+		select {
+		case activeID := <-firstReady:
+			p.log.Printf("masque in-process pool ready active=%d (warming %d total slots)", activeID, p.size)
+			return nil
+		default:
+			errMu.Lock()
+			summary := strings.Join(bootErrs, "; ")
+			errMu.Unlock()
+			p.Close()
+			return fmt.Errorf("masque pool failed to start any slot: %s", summary)
+		}
 	case <-ctx.Done():
 		p.Close()
 		return ctx.Err()
 	}
-
-	close(readyCh)
-	close(errCh)
-
-	readyCount := 0
-	for id := range readyCh {
-		if readyCount == 0 {
-			p.mu.Lock()
-			p.active = id
-			p.mu.Unlock()
-		}
-		readyCount++
-	}
-	if readyCount == 0 {
-		var errs []string
-		for err := range errCh {
-			errs = append(errs, err.Error())
-		}
-		p.Close()
-		return fmt.Errorf("masque pool failed to start any slot: %s", strings.Join(errs, "; "))
-	}
-
-	// If spare slots landed on the same /64 prefix as the active slot, recycle
-	// them asynchronously so the first rotation is instant.
-	active := p.activeSlot()
-	active.mu.Lock()
-	activePrefix := active.prefix
-	active.mu.Unlock()
-	if activePrefix != "" {
-		for _, s := range p.slots {
-			if s.id == active.id {
-				continue
-			}
-			s.mu.Lock()
-			dup := s.state == "ready" && s.prefix == activePrefix
-			s.mu.Unlock()
-			if dup {
-				p.log.Printf("masque slot=%d shares prefix %s with active slot=%d; recycling in background", s.id, activePrefix, active.id)
-				p.wg.Add(1)
-				go func(sl *slot) {
-					defer p.wg.Done()
-					bgCtx, cancel := context.WithTimeout(p.ctx, 45*time.Second)
-					defer cancel()
-					_ = p.recycleSlot(bgCtx, sl, activePrefix)
-				}(s)
-			}
-		}
-	}
-
-	p.log.Printf("masque in-process pool ready slots=%d/%d active=%d", readyCount, p.size, active.id)
-	return nil
 }
 
 func (p *Pool) Close() {
@@ -590,20 +605,48 @@ func (p *Pool) resolveIPv6Target(ctx context.Context, addr string) string {
 	key := strings.ToLower(host)
 	now := time.Now()
 	p.mu.Lock()
-	if entry, ok := p.aaaaCache[key]; ok && now.Before(entry.expires) {
-		p.mu.Unlock()
+	if entry, ok := p.aaaaCache[key]; ok {
+		if now.Before(entry.expires) {
+			p.mu.Unlock()
+			if entry.ip != "" {
+				return net.JoinHostPort(entry.ip, port)
+			}
+			return addr
+		}
+		// Stale-while-revalidate: serve the last known IPv6 immediately (0ms)
+		// and refresh asynchronously so prompts never hit a DNS pause.
 		if entry.ip != "" {
+			if !entry.refreshing && !p.closed {
+				entry.refreshing = true
+				p.aaaaCache[key] = entry
+				p.wg.Add(1)
+				go func() {
+					defer p.wg.Done()
+					rctx, cancel := context.WithTimeout(p.ctx, 3*time.Second)
+					defer cancel()
+					p.refreshAAAA(rctx, key)
+				}()
+			}
+			p.mu.Unlock()
 			return net.JoinHostPort(entry.ip, port)
 		}
-		return addr
 	}
 	p.mu.Unlock()
 
+	ip := p.refreshAAAA(ctx, key)
+	if ip != "" {
+		return net.JoinHostPort(ip, port)
+	}
+	return addr
+}
+
+func (p *Pool) refreshAAAA(ctx context.Context, key string) string {
 	ip := lookupAAAA(ctx, key)
-	ttl := 15 * time.Minute
+	ttl := 30 * time.Minute
 	if ip == "" {
 		ttl = 60 * time.Second
 	}
+	now := time.Now()
 	p.mu.Lock()
 	if len(p.aaaaCache) >= 64 {
 		for k, v := range p.aaaaCache {
@@ -612,24 +655,32 @@ func (p *Pool) resolveIPv6Target(ctx context.Context, addr string) string {
 			}
 		}
 	}
+	if ip == "" {
+		if prev, ok := p.aaaaCache[key]; ok && prev.ip != "" {
+			p.aaaaCache[key] = aaaaEntry{ip: prev.ip, expires: now.Add(2 * time.Minute)}
+			p.mu.Unlock()
+			return prev.ip
+		}
+	}
 	p.aaaaCache[key] = aaaaEntry{ip: ip, expires: now.Add(ttl)}
 	p.mu.Unlock()
-	if ip != "" {
-		return net.JoinHostPort(ip, port)
-	}
-	return addr
+	return ip
 }
 
 func lookupAAAA(ctx context.Context, host string) string {
-	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if ips, err := net.DefaultResolver.LookupIP(rctx, "ip6", host); err == nil {
+	// Cap OS DNS lookup to 500ms so IPv4-only routers fail over to DoH quickly.
+	osCtx, osCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	ips, err := net.DefaultResolver.LookupIP(osCtx, "ip6", host)
+	osCancel()
+	if err == nil {
 		for _, ip := range ips {
 			if ip.To4() == nil && ip.To16() != nil {
 				return ip.String()
 			}
 		}
 	}
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	dohEndpoints := []string{
 		"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=AAAA",
 		"https://dns.google/resolve?name=" + url.QueryEscape(host) + "&type=AAAA",

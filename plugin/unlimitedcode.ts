@@ -141,34 +141,42 @@ async function isDaemonHealthy(): Promise<boolean> {
   }
 }
 
+let daemonBootPromise: Promise<boolean> | null = null
+
 // Launch the local daemon tied to this OpenCode PID so it exits automatically
-// when OpenCode closes.
-async function ensureDaemonRunning(): Promise<boolean> {
-  if (await isDaemonHealthy()) return true
-  const bin = installedBinary()
-  if (!existsSync(bin)) return false
-  try {
-    const childEnv = { ...process.env }
-    delete childEnv.HTTPS_PROXY
-    delete childEnv.HTTP_PROXY
-    delete childEnv.https_proxy
-    delete childEnv.http_proxy
-    const child = spawn(bin, ["daemon", "--parent-pid", String(process.pid)], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      env: childEnv,
-    })
-    child.unref()
-  } catch {
-    return false
-  }
-  const deadline = Date.now() + 25_000
-  while (Date.now() < deadline) {
+// when all OpenCode processes close. Single-flight so concurrent calls share one boot.
+function ensureDaemonRunning(): Promise<boolean> {
+  if (daemonBootPromise) return daemonBootPromise
+  daemonBootPromise = (async () => {
     if (await isDaemonHealthy()) return true
-    await new Promise((r) => setTimeout(r, 250))
-  }
-  return false
+    const bin = installedBinary()
+    if (!existsSync(bin)) return false
+    try {
+      const childEnv = { ...process.env }
+      delete childEnv.HTTPS_PROXY
+      delete childEnv.HTTP_PROXY
+      delete childEnv.https_proxy
+      delete childEnv.http_proxy
+      const child = spawn(bin, ["daemon", "--parent-pid", String(process.pid)], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: childEnv,
+      })
+      child.unref()
+    } catch {
+      return false
+    }
+    const deadline = Date.now() + 25_000
+    while (Date.now() < deadline) {
+      if (await isDaemonHealthy()) return true
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    return false
+  })().finally(() => {
+    daemonBootPromise = null
+  })
+  return daemonBootPromise
 }
 
 function ensureProxyEnv(): void {
@@ -256,9 +264,10 @@ async function requestRotate(event: any, type = "provider.free-limit"): Promise<
 }
 
 async function setup(ctx: any): Promise<void> {
-  if (await ensureDaemonRunning()) {
-    ensureProxyEnv()
-  }
+  // Set proxy env and register hooks immediately (0ms) so OpenCode startup and
+  // new-chat initialization never block on daemon boot.
+  ensureProxyEnv()
+  void ensureDaemonRunning()
 
   if (typeof ctx?.session?.hook !== "function") return
 

@@ -896,6 +896,8 @@ async function openStatusModal(context: any, status?: any): Promise<void> {
   } catch {}
 }
 
+let didInitialBoot = false
+
 function PromptBadge(props: {
   context: any
   state: () => "auto" | "offline"
@@ -915,9 +917,11 @@ function PromptBadge(props: {
     return st
   }
 
-  let promptedUpdate = false
-
   onMount(() => {
+    if (didInitialBoot) return
+    didInitialBoot = true
+
+    let promptedUpdate = false
     const checkStartupUpdate = async (st: any) => {
       if (promptedUpdate) return
       const tag = String(st?.update_available || "")
