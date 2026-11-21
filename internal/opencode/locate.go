@@ -39,9 +39,15 @@ func candidates() []string {
 	if runtime.GOOS == "windows" {
 		if appdata := os.Getenv("APPDATA"); appdata != "" {
 			out = append(out, filepath.Join(appdata, "npm", "node_modules", "@opencode", "cli", "bin", "opencode.exe"))
-			// OpenCode Desktop stages its bundled CLI under %APPDATA%\OpenCode\cli\<stage>\opencode*.exe
-			if matches, err := filepath.Glob(filepath.Join(appdata, "OpenCode", "cli", "*", "opencode*.exe")); err == nil {
-				out = append(out, matches...)
+			// OpenCode Desktop stages its bundled CLI under %APPDATA%\ai.opencode.desktop\cli\<ver>\opencode-cli.exe
+			// and %APPDATA%\OpenCode\cli\<stage>\opencode*.exe.
+			for _, pat := range []string{
+				filepath.Join(appdata, "ai.opencode.desktop", "cli", "*", "opencode*.exe"),
+				filepath.Join(appdata, "OpenCode", "cli", "*", "opencode*.exe"),
+			} {
+				if matches, err := filepath.Glob(pat); err == nil {
+					out = append(out, matches...)
+				}
 			}
 		}
 		if local := os.Getenv("LOCALAPPDATA"); local != "" {
@@ -64,12 +70,22 @@ func candidates() []string {
 			filepath.Join(home, ".bun", "bin", "opencode"),
 		)
 		if runtime.GOOS == "darwin" {
-			if matches, err := filepath.Glob(filepath.Join(home, "Library", "Application Support", "OpenCode", "cli", "*", "opencode*")); err == nil {
-				out = append(out, matches...)
+			for _, pat := range []string{
+				filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop", "cli", "*", "opencode*"),
+				filepath.Join(home, "Library", "Application Support", "OpenCode", "cli", "*", "opencode*"),
+			} {
+				if matches, err := filepath.Glob(pat); err == nil {
+					out = append(out, matches...)
+				}
 			}
 		} else if runtime.GOOS == "linux" {
-			if matches, err := filepath.Glob(filepath.Join(home, ".config", "OpenCode", "cli", "*", "opencode*")); err == nil {
-				out = append(out, matches...)
+			for _, pat := range []string{
+				filepath.Join(home, ".config", "ai.opencode.desktop", "cli", "*", "opencode*"),
+				filepath.Join(home, ".config", "OpenCode", "cli", "*", "opencode*"),
+			} {
+				if matches, err := filepath.Glob(pat); err == nil {
+					out = append(out, matches...)
+				}
 			}
 		}
 	}
