@@ -30,9 +30,6 @@ func cmdUpdate(args []string) {
 		fatal(fmt.Errorf("check for updates: %w", err))
 	}
 
-	cachePath := filepath.Join(config.Home(), "update_check.json")
-	update.WriteCache(cachePath, rel)
-
 	if rel == nil {
 		fmt.Printf("Already up to date (v%s).\n", strings.TrimPrefix(version, "v"))
 		return
@@ -56,7 +53,7 @@ func cmdUpdate(args []string) {
 		}
 	}
 
-	if err := applyReleaseUpdate(rel, cachePath); err != nil {
+	if err := applyReleaseUpdate(rel); err != nil {
 		fatal(err)
 	}
 }
@@ -68,11 +65,10 @@ func checkUpdateQuick() *update.Release {
 	if err != nil {
 		return nil
 	}
-	update.WriteCache(filepath.Join(config.Home(), "update_check.json"), rel)
 	return rel
 }
 
-func applyReleaseUpdate(rel *update.Release, cachePath string) error {
+func applyReleaseUpdate(rel *update.Release) error {
 	fmt.Printf("Downloading %s...\n", rel.AssetName)
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	tmpBin, err := update.DownloadAndVerify(dlCtx, rel, config.Home())
@@ -102,10 +98,7 @@ func applyReleaseUpdate(rel *update.Release, cachePath string) error {
 		return fmt.Errorf("refresh plugin after update: %w", err)
 	}
 
-	if cachePath == "" {
-		cachePath = filepath.Join(config.Home(), "update_check.json")
-	}
-	update.WriteCache(cachePath, nil)
+	_ = os.Remove(filepath.Join(config.Home(), "update_skip"))
 	fmt.Printf("\nUpdated to %s! Restart OpenCode to load the new plugin.\n", rel.Tag)
 	return nil
 }

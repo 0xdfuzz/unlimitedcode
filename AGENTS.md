@@ -10,7 +10,7 @@ Engineering rules and architecture contract for **UnlimitedCode**.
 - `internal/control/`: loopback-only authenticated HTTP control API (`/health`, `/status`, `/rotate`, `/event`, `/shutdown`).
 - `internal/config/`: JSON config loading, defaults, env overrides, and validation.
 - `internal/setup/`: first-run config creation (`installed_at` marker), OpenCode `service*.json` env updater/cleaner, binary swap, and legacy logon autostart cleanup.
-- `internal/update/`: opt-in GitHub Releases checker with shared cache and SHA-256 checksum verification.
+- `internal/update/`: opt-in GitHub Releases checker (once at daemon startup + CLI) with SHA-256 checksum verification.
 - `internal/doctor/`: environment and connectivity diagnostics.
 - `internal/opencode/`: official OpenCode CLI + Desktop binary locator.
 - `internal/upstream/`: `Dialer` interface and `direct` / `http-connect` implementations.

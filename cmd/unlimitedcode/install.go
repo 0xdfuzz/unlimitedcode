@@ -55,7 +55,7 @@ func cmdInstall(args []string, interactive bool) {
 				fmt.Println()
 				switch strings.TrimSpace(choice) {
 				case "1":
-					if err := applyReleaseUpdate(avail, ""); err != nil {
+					if err := applyReleaseUpdate(avail); err != nil {
 						fail(err)
 					}
 					pauseIfWindows()
@@ -115,7 +115,7 @@ func cmdInstall(args []string, interactive bool) {
 				fmt.Println()
 				switch strings.TrimSpace(choice) {
 				case "1":
-					if err := applyReleaseUpdate(avail, ""); err != nil {
+					if err := applyReleaseUpdate(avail); err != nil {
 						fail(err)
 					}
 					pauseIfWindows()

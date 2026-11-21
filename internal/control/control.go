@@ -31,16 +31,17 @@ type Egress struct {
 }
 
 type Status struct {
-	Version       string          `json:"version"`
-	StartedAt     time.Time       `json:"started_at"`
-	UptimeSeconds int64           `json:"uptime_seconds"`
-	Listen        string          `json:"listen"`
-	Control       string          `json:"control"`
-	Egress        Egress          `json:"egress"`
-	Proxy         proxy.Stats     `json:"proxy"`
-	HopEnabled    bool              `json:"hop_enabled"`
-	Hop           rotate.Stats      `json:"hop"`
-	Pool          *masque.PoolStats `json:"pool,omitempty"`
+	Version         string            `json:"version"`
+	UpdateAvailable string            `json:"update_available,omitempty"`
+	StartedAt       time.Time         `json:"started_at"`
+	UptimeSeconds   int64             `json:"uptime_seconds"`
+	Listen          string            `json:"listen"`
+	Control         string            `json:"control"`
+	Egress          Egress            `json:"egress"`
+	Proxy           proxy.Stats       `json:"proxy"`
+	HopEnabled      bool              `json:"hop_enabled"`
+	Hop             rotate.Stats      `json:"hop"`
+	Pool            *masque.PoolStats `json:"pool,omitempty"`
 }
 
 // Hopper is implemented by rotate.Manager.
@@ -50,17 +51,18 @@ type Hopper interface {
 }
 
 type Options struct {
-	Listen      string
-	Token       string
-	Version     string
-	StartedAt   time.Time
-	ProxyListen string
-	Egress      Egress
-	Stats       func() proxy.Stats
-	Hop         Hopper
-	Pool        func() masque.PoolStats
-	OnShutdown  func()
-	Logger      Logger
+	Listen          string
+	Token           string
+	Version         string
+	UpdateAvailable func() string
+	StartedAt       time.Time
+	ProxyListen     string
+	Egress          Egress
+	Stats           func() proxy.Stats
+	Hop             Hopper
+	Pool            func() masque.PoolStats
+	OnShutdown      func()
+	Logger          Logger
 }
 
 type Server struct {
@@ -172,6 +174,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		Egress:        s.opts.Egress,
 		Proxy:         s.opts.Stats(),
 		HopEnabled:    s.opts.Hop != nil,
+	}
+	if s.opts.UpdateAvailable != nil {
+		status.UpdateAvailable = s.opts.UpdateAvailable()
 	}
 	if s.opts.Hop != nil {
 		status.Hop = s.opts.Hop.Stats()

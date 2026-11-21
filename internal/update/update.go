@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,15 +30,6 @@ type Release struct {
 	AssetURL    string `json:"asset_url"`
 	ChecksumURL string `json:"checksum_url,omitempty"`
 	HTMLURL     string `json:"html_url,omitempty"`
-}
-
-// CacheEntry is shared between the CLI and the OpenCode TUI/Desktop plugins
-// so update checks happen at most once per 24 hours.
-type CacheEntry struct {
-	CheckedAt int64  `json:"checked_at"`
-	Tag       string `json:"tag,omitempty"`
-	Version   string `json:"version,omitempty"`
-	HTMLURL   string `json:"html_url,omitempty"`
 }
 
 func directClient(timeout time.Duration) *http.Client {
@@ -252,20 +242,4 @@ func fetchChecksum(ctx context.Context, checksumURL, assetName string) (string, 
 		}
 	}
 	return "", fmt.Errorf("checksums.txt missing entry for %s", assetName)
-}
-
-// WriteCache records the latest checked version for the CLI and plugins.
-func WriteCache(path string, rel *Release) {
-	entry := CacheEntry{CheckedAt: time.Now().UnixMilli()}
-	if rel != nil {
-		entry.Tag = rel.Tag
-		entry.Version = rel.Version
-		entry.HTMLURL = rel.HTMLURL
-	}
-	raw, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(path), 0o700)
-	_ = os.WriteFile(path, append(raw, '\n'), 0o600)
 }

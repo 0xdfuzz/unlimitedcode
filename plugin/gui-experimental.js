@@ -10,13 +10,10 @@ const { createEffect, createSignal, onCleanup, onMount } = require("solid-js")
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const WINDOWS = ["24h", "7d", "30d", "All"]
-const RELEASES_URL = "https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest"
-const UPDATE_CHECK_TTL_MS = 2 * 60 * 60 * 1000
 
 let cachedControlURL = ""
 let cachedControlToken = ""
-let memUpdateTag = ""
-let memUpdateCheckedAt = 0
+let lastSeenUpdateTag = ""
 
 function stateHome() {
   if (process.env.UNLIMITEDCODE_HOME) return process.env.UNLIMITEDCODE_HOME
@@ -327,62 +324,18 @@ async function controlCall(endpoint, method = "GET", body, timeoutMs = 8000) {
   }
 }
 
-function parseSemver(raw) {
-  const clean = String(raw || "").trim().replace(/^v/i, "").split(/[-+]/)[0]
-  const parts = clean.split(".").map((n) => Number(n))
-  if (parts.length < 2 || parts.length > 3 || parts.some((n) => !Number.isInteger(n) || n < 0)) {
-    return null
-  }
-  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
-}
-
-function isNewerVersion(current, candidate) {
-  const c = parseSemver(current)
-  const n = parseSemver(candidate)
-  if (!c || !n) return false
-  for (let i = 0; i < 3; i++) {
-    if (n[i] !== c[i]) return n[i] > c[i]
-  }
-  return false
-}
-
-async function checkAvailableUpdate(currentVersion) {
-  if (!currentVersion) return ""
-  const now = Date.now()
-  if (memUpdateCheckedAt > 0 && now - memUpdateCheckedAt < UPDATE_CHECK_TTL_MS) {
-    return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
-  }
-  const cachePath = path.join(stateHome(), "update_check.json")
+function readSkippedVersion() {
   try {
-    const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"))
-    const checkedAt = Number(cached?.checked_at || 0)
-    if (checkedAt > 0 && now - checkedAt < UPDATE_CHECK_TTL_MS) {
-      memUpdateCheckedAt = checkedAt
-      memUpdateTag = String(cached.tag || "")
-      return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
-    }
-  } catch {}
-  try {
-    const res = await fetch(RELEASES_URL, {
-      headers: { accept: "application/vnd.github+json", "user-agent": `unlimitedcode/${currentVersion}` },
-      signal: AbortSignal.timeout(4000),
-    })
-    if (!res.ok) return ""
-    const data = await res.json().catch(() => null)
-    const tag = String(data?.tag_name || "").trim()
-    const version = tag.replace(/^v/i, "")
-    memUpdateCheckedAt = now
-    memUpdateTag = tag
-    try {
-      fs.writeFileSync(
-        cachePath,
-        JSON.stringify({ checked_at: now, tag, version, html_url: String(data?.html_url || "") }) + "\n",
-      )
-    } catch {}
-    return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+    return fs.readFileSync(path.join(stateHome(), "update_skip"), "utf8").trim()
   } catch {
     return ""
   }
+}
+
+function writeSkippedVersion(tag) {
+  try {
+    fs.writeFileSync(path.join(stateHome(), "update_skip"), String(tag || "").trim() + "\n")
+  } catch {}
 }
 
 async function runUpdateBinary() {
@@ -409,8 +362,6 @@ async function runUpdateBinary() {
     }
   })
   if (ok) {
-    memUpdateCheckedAt = 0
-    memUpdateTag = ""
     await ensureDaemonRunning()
     return { ok: true, message: "Updated! Restart OpenCode to reload the plugin." }
   }
@@ -430,6 +381,7 @@ const StatusSchema = Schema.Struct({
   online: Schema.Boolean,
   version: Schema.String,
   updateTag: Schema.String,
+  promptUpdate: Schema.Boolean,
   ip: Schema.String,
   ready: Schema.Number,
   total: Schema.Number,
@@ -456,6 +408,7 @@ const UnlimitedIpc = sdk.Ipc.define({
     rotate: { output: RotateResultSchema },
     restart: { output: StatusSchema },
     applyUpdate: { output: UpdateResultSchema },
+    skipUpdate: { output: Schema.Boolean },
     stats: { output: Schema.String },
   },
 })
@@ -472,6 +425,7 @@ async function fetchSummary() {
       online: false,
       version: "",
       updateTag: "",
+      promptUpdate: false,
       ip: "offline",
       ready: 0,
       total: 0,
@@ -491,11 +445,14 @@ async function fetchSummary() {
   }))
   const ready = slots.filter((s) => s.state === "ready").length
   const version = String(st.version || "")
-  const updateTag = version ? await checkAvailableUpdate(version) : ""
+  const updateTag = String(st.update_available || "")
+  lastSeenUpdateTag = updateTag
+  const promptUpdate = Boolean(updateTag && updateTag !== readSkippedVersion())
   return {
     online: true,
     version,
     updateTag,
+    promptUpdate,
     ip: shortenIPv6(st.pool?.active_ip || "?"),
     ready,
     total: slots.length,
@@ -845,6 +802,80 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
   return root
 }
 
+function buildUpdatePromptElement(currentVersion, tag, dialog, actions) {
+  const root = document.createElement("div")
+  root.tabIndex = -1
+  root.style.cssText = [
+    "pointer-events:auto",
+    "background:var(--surface-raised-stronger-non-alpha,var(--background-base,#141417))",
+    "border:1px solid var(--border-weak-base,rgba(255,255,255,0.12))",
+    "border-radius:12px",
+    "box-shadow:0 24px 64px rgba(0,0,0,0.65)",
+    "padding:20px 22px",
+    "width:420px",
+    "max-width:calc(100vw - 48px)",
+    "font-family:var(--font-sans,system-ui,sans-serif)",
+    "font-size:13px",
+    "color:var(--text-base,#d4d4d8)",
+    "display:flex",
+    "flex-direction:column",
+    "gap:14px",
+    "outline:none",
+  ].join(";")
+  root.addEventListener("pointerdown", (e) => e.stopPropagation())
+  root.addEventListener("mousedown", (e) => e.stopPropagation())
+  root.addEventListener("click", (e) => e.stopPropagation())
+
+  const title = document.createElement("div")
+  title.style.cssText = "font-weight:600;font-size:14px;color:var(--text-strong,#fff);"
+  title.textContent = "UnlimitedCode update available"
+  root.appendChild(title)
+
+  const body = document.createElement("div")
+  body.style.cssText = "color:var(--text-weak,rgba(255,255,255,0.7));line-height:1.45;"
+  body.textContent = `v${currentVersion || "?"} → ${tag} is ready. Download, verify SHA-256, and install now?`
+  root.appendChild(body)
+
+  const mkBtn = (label, primary, onClick) => {
+    const b = document.createElement("button")
+    b.type = "button"
+    b.textContent = label
+    b.style.cssText = [
+      "border-radius:6px",
+      "padding:6px 12px",
+      "cursor:pointer",
+      "font:inherit",
+      "font-size:12.5px",
+      "outline:none",
+      primary
+        ? "background:var(--surface-raised-base-hover,rgba(255,255,255,0.14));border:1px solid var(--icon-success-base,#4ade80);color:var(--text-strong,#fff);font-weight:600;"
+        : "background:transparent;border:1px solid var(--border-weak-base,rgba(255,255,255,0.14));color:var(--text-weak,rgba(255,255,255,0.7));",
+    ].join(";")
+    b.onclick = onClick
+    return b
+  }
+
+  const row = document.createElement("div")
+  row.style.cssText = "display:flex;justify-content:flex-end;gap:8px;padding-top:4px;"
+
+  const skipBtn = mkBtn(`Skip ${tag}`, false, async () => {
+    await actions.skip()
+    dialog.close()
+  })
+  const laterBtn = mkBtn("Later", false, () => dialog.close())
+  const installBtn = mkBtn("Update now", true, async () => {
+    installBtn.textContent = "Updating…"
+    installBtn.disabled = true
+    await actions.applyUpdate()
+    dialog.close()
+  })
+  row.appendChild(skipBtn)
+  row.appendChild(laterBtn)
+  row.appendChild(installBtn)
+  root.appendChild(row)
+  return root
+}
+
 exports.default = sdk.Plugin.define({
   main(ctx) {
     ctx.provide(UnlimitedIpc, {
@@ -873,6 +904,10 @@ exports.default = sdk.Plugin.define({
       async applyUpdate() {
         return await runUpdateBinary()
       },
+      async skipUpdate() {
+        if (lastSeenUpdateTag) writeSkippedVersion(lastSeenUpdateTag)
+        return true
+      },
       async stats() {
         return computeStatsJSON()
       },
@@ -883,6 +918,7 @@ exports.default = sdk.Plugin.define({
       online: true,
       version: "",
       updateTag: "",
+      promptUpdate: false,
       ip: "…",
       ready: 0,
       total: 0,
@@ -890,35 +926,53 @@ exports.default = sdk.Plugin.define({
       burnt: 0,
       slots: [],
     })
-    let notifiedUpdate = false
+    let promptedUpdate = false
 
     const refresh = async () => {
       try {
         const next = await ctx.main(UnlimitedIpc).status()
-        if (next) {
-          setSummary(next)
-          if (!notifiedUpdate && next.updateTag) {
-            notifiedUpdate = true
-            ctx.toasts.show({
-              title: "UnlimitedCode",
-              description: `Update available: ${next.updateTag} — click unlimited to install`,
-              variant: "info",
-              duration: 5000,
-            })
-          }
-        }
+        if (next) setSummary(next)
         return next
       } catch {
         return null
       }
     }
 
+    const maybePromptUpdate = (st) => {
+      if (promptedUpdate || !st?.promptUpdate || !st?.updateTag) return
+      promptedUpdate = true
+      ctx.dialogs.open((dialog) =>
+        buildUpdatePromptElement(st.version, st.updateTag, dialog, {
+          applyUpdate: runApplyUpdate,
+          skip: async () => {
+            await ctx.main(UnlimitedIpc).skipUpdate().catch(() => {})
+          },
+        }),
+      )
+    }
+
     onMount(() => {
-      void refresh()
+      let followup
+      void (async () => {
+        const st = await refresh()
+        if (st?.promptUpdate) {
+          maybePromptUpdate(st)
+        } else {
+          // Wait briefly for the daemon's one-shot startup check; never interrupt mid-session.
+          followup = setTimeout(() => {
+            void refresh().then((next) => {
+              if (next?.promptUpdate) maybePromptUpdate(next)
+            })
+          }, 2500)
+        }
+      })()
       const timer = setInterval(() => {
         void refresh()
       }, 60000)
-      onCleanup(() => clearInterval(timer))
+      onCleanup(() => {
+        if (followup) clearTimeout(followup)
+        clearInterval(timer)
+      })
     })
 
     const runRotate = async () => {

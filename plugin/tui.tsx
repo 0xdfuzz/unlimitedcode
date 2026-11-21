@@ -6,8 +6,6 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const ROTATE_TIMEOUT_MS = 55_000
-const RELEASES_URL = "https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest"
-const UPDATE_CHECK_TTL_MS = 2 * 60 * 60 * 1000
 
 const WINDOWS = ["24h", "7d", "30d", "All"] as const
 type WindowKey = (typeof WINDOWS)[number]
@@ -48,8 +46,6 @@ function stateHome(): string {
 
 let cachedControlURL = ""
 let cachedControlToken = ""
-let memUpdateTag = ""
-let memUpdateCheckedAt = 0
 
 function readConfigJSON(): any {
   try {
@@ -394,61 +390,46 @@ async function loadTokenStats(): Promise<FullStats> {
   }
 }
 
-function parseSemver(raw: string): [number, number, number] | null {
-  const clean = raw.trim().replace(/^v/i, "").split(/[-+]/)[0]
-  const parts = clean.split(".").map((n) => Number(n))
-  if (parts.length < 2 || parts.length > 3 || parts.some((n) => !Number.isInteger(n) || n < 0)) {
-    return null
-  }
-  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
-}
-
-function isNewerVersion(current: string, candidate: string): boolean {
-  const c = parseSemver(current)
-  const n = parseSemver(candidate)
-  if (!c || !n) return false
-  for (let i = 0; i < 3; i++) {
-    if (n[i] !== c[i]) return n[i] > c[i]
-  }
-  return false
-}
-
-async function checkAvailableUpdate(currentVersion: string): Promise<string> {
-  if (!currentVersion) return ""
-  const now = Date.now()
-  if (memUpdateCheckedAt > 0 && now - memUpdateCheckedAt < UPDATE_CHECK_TTL_MS) {
-    return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
-  }
-  const cachePath = join(stateHome(), "update_check.json")
+function readSkippedVersion(): string {
   try {
-    const cached = JSON.parse(readFileSync(cachePath, "utf8"))
-    const checkedAt = Number(cached?.checked_at || 0)
-    if (checkedAt > 0 && now - checkedAt < UPDATE_CHECK_TTL_MS) {
-      memUpdateCheckedAt = checkedAt
-      memUpdateTag = String(cached.tag || "")
-      return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
-    }
-  } catch {}
-  try {
-    const res = await fetch(RELEASES_URL, {
-      headers: { accept: "application/vnd.github+json", "user-agent": `unlimitedcode/${currentVersion}` },
-      signal: AbortSignal.timeout(4_000),
-    })
-    if (!res.ok) return ""
-    const data: any = await res.json().catch(() => null)
-    const tag = String(data?.tag_name || "").trim()
-    const version = tag.replace(/^v/i, "")
-    memUpdateCheckedAt = now
-    memUpdateTag = tag
-    try {
-      writeFileSync(
-        cachePath,
-        JSON.stringify({ checked_at: now, tag, version, html_url: String(data?.html_url || "") }) + "\n",
-      )
-    } catch {}
-    return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+    return readFileSync(join(stateHome(), "update_skip"), "utf8").trim()
   } catch {
     return ""
+  }
+}
+
+function writeSkippedVersion(tag: string): void {
+  try {
+    writeFileSync(join(stateHome(), "update_skip"), tag.trim() + "\n")
+  } catch {}
+}
+
+async function promptUpdateDialog(context: any, currentVersion: string, tag: string): Promise<void> {
+  const choice = await context.ui.dialog.select({
+    title: `UnlimitedCode update available (${tag})`,
+    placeholder: "Install the latest release?",
+    options: [
+      {
+        title: "Update now",
+        value: "update",
+        description: `Download, verify SHA-256 & install ${tag} (current v${currentVersion || "?"})`,
+      },
+      {
+        title: "Later",
+        value: "later",
+        description: "Remind me next time OpenCode starts",
+      },
+      {
+        title: `Skip ${tag}`,
+        value: "skip",
+        description: "Ignore this release",
+      },
+    ],
+  })
+  if (choice === "update") {
+    await doApplyUpdate(context, tag)
+  } else if (choice === "skip") {
+    writeSkippedVersion(tag)
   }
 }
 
@@ -488,8 +469,6 @@ async function doApplyUpdate(context: any, tag: string): Promise<void> {
     }
   })
   if (ok) {
-    memUpdateCheckedAt = 0
-    memUpdateTag = ""
     await ensureDaemonRunning()
     context.ui.toast.show({
       title: "UnlimitedCode",
@@ -918,7 +897,7 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
   const [state, setState] = createSignal<"auto" | "offline">("auto")
   const [hovered, setHovered] = createSignal(false)
 
-  const refresh = async () => {
+  const refresh = async (): Promise<any | null> => {
     let st = await controlCall("/status", "GET", undefined, 1_500)
     if (!st) {
       if (await ensureDaemonRunning()) {
@@ -926,31 +905,41 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
       }
     }
     setState(st ? "auto" : "offline")
+    return st
   }
 
-  let notifiedUpdate = false
+  let promptedUpdate = false
 
   onMount(() => {
+    const checkStartupUpdate = async (st: any) => {
+      if (promptedUpdate) return
+      const tag = String(st?.update_available || "")
+      if (!tag || tag === readSkippedVersion()) return
+      promptedUpdate = true
+      await promptUpdateDialog(props.context, String(st.version || ""), tag)
+    }
+    let followup: ReturnType<typeof setTimeout> | undefined
     void (async () => {
-      await refresh()
-      const st = await controlCall("/status", "GET", undefined, 1_500)
-      if (!notifiedUpdate && st?.version) {
-        const tag = await checkAvailableUpdate(String(st.version))
-        if (tag) {
-          notifiedUpdate = true
-          props.context.ui.toast.show({
-            title: "UnlimitedCode",
-            message: `Update available: ${tag} — open /unlimited to install`,
-            variant: "info",
-            duration: 5000,
+      const st = await refresh()
+      if (st?.update_available) {
+        await checkStartupUpdate(st)
+      } else {
+        // Give the daemon's one-shot startup check a brief moment to finish;
+        // never pop up a dialog mid-session afterwards.
+        followup = setTimeout(() => {
+          void controlCall("/status", "GET", undefined, 1_500).then((next) => {
+            if (next?.update_available) void checkStartupUpdate(next)
           })
-        }
+        }, 2_500)
       }
     })()
     const timer = setInterval(() => {
       void refresh()
     }, 60_000)
-    onCleanup(() => clearInterval(timer))
+    onCleanup(() => {
+      if (followup) clearTimeout(followup)
+      clearInterval(timer)
+    })
   })
 
   const theme = () => props.context.theme
@@ -1015,7 +1004,7 @@ export default {
                 const ready = status?.pool?.slots?.filter((s: any) => s.state === "ready").length ?? 0
                 const total = status?.pool?.slots?.length ?? 0
                 const badge = !status ? "OFFLINE" : "AUTO"
-                const updateTag = status?.version ? await checkAvailableUpdate(String(status.version)) : ""
+                const updateTag = String(status?.update_available || "")
 
                 const options = [
                   ...(updateTag

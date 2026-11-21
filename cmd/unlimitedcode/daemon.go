@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"unlimitedcode/internal/masque"
 	"unlimitedcode/internal/proxy"
 	"unlimitedcode/internal/rotate"
+	"unlimitedcode/internal/update"
 	"unlimitedcode/internal/upstream"
 )
 
@@ -163,16 +165,28 @@ func cmdDaemon(args []string) {
 		logger.Printf("rotate disabled by config")
 	}
 
+	var availableUpdate atomic.Value
+	availableUpdate.Store("")
+	go func() {
+		checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer checkCancel()
+		if rel, err := update.Check(checkCtx, version); err == nil && rel != nil {
+			availableUpdate.Store(rel.Tag)
+			logger.Printf("update available: %s (current %s)", rel.Tag, version)
+		}
+	}()
+
 	controlOpts := control.Options{
-		Listen:      cfg.Control,
-		Token:       token,
-		Version:     version,
-		StartedAt:   started,
-		ProxyListen: cfg.Listen,
-		Egress:      control.Egress{Mode: cfg.Egress.Mode, Upstream: cfg.UpstreamName()},
-		Stats:       p.Stats,
-		OnShutdown:  cancel,
-		Logger:      logger,
+		Listen:          cfg.Control,
+		Token:           token,
+		Version:         version,
+		UpdateAvailable: func() string { return availableUpdate.Load().(string) },
+		StartedAt:       started,
+		ProxyListen:     cfg.Listen,
+		Egress:          control.Egress{Mode: cfg.Egress.Mode, Upstream: cfg.UpstreamName()},
+		Stats:           p.Stats,
+		OnShutdown:      cancel,
+		Logger:          logger,
 	}
 	if rotManager != nil {
 		controlOpts.Hop = rotManager
