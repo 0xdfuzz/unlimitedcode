@@ -123,7 +123,7 @@ func TestSetAndClearOpenCodeServiceEnv(t *testing.T) {
 		t.Fatalf("service-mikoshi.json = %s", raw)
 	}
 
-	if _, err := ClearOpenCodeServiceEnv(); err != nil {
+	if _, err := ClearOpenCodeServiceEnv("http://127.0.0.1:42987"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err = os.ReadFile(mikoshi)
@@ -132,5 +132,20 @@ func TestSetAndClearOpenCodeServiceEnv(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "HTTPS_PROXY") || !strings.Contains(string(raw), `"password": "secret"`) {
 		t.Fatalf("after clear service-mikoshi.json = %s", raw)
+	}
+
+	// Foreign user proxy must never be touched on uninstall.
+	if err := os.WriteFile(mikoshi, []byte(`{"password":"secret","env":{"HTTPS_PROXY":"http://corp:8080","CUSTOM":"keep"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClearOpenCodeServiceEnv("http://127.0.0.1:42987"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(mikoshi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "http://corp:8080") || !strings.Contains(string(raw), `"CUSTOM":"keep"`) {
+		t.Fatalf("foreign proxy was altered: %s", raw)
 	}
 }

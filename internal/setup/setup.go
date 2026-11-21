@@ -130,8 +130,9 @@ func SetOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 }
 
 // ClearOpenCodeServiceEnv removes HTTPS_PROXY, HTTP_PROXY, and NO_PROXY from
-// OpenCode's service.json and any service-*.json files.
-func ClearOpenCodeServiceEnv() ([]string, error) {
+// OpenCode's service.json and any service-*.json files ONLY when they point to
+// UnlimitedCode's proxyURL, leaving any user-configured proxy or other keys intact.
+func ClearOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 	files, err := serviceConfigFiles()
 	if err != nil {
 		return nil, err
@@ -150,9 +151,21 @@ func ClearOpenCodeServiceEnv() ([]string, error) {
 		if !ok || envMap == nil {
 			continue
 		}
-		delete(envMap, "HTTPS_PROXY")
-		delete(envMap, "HTTP_PROXY")
-		delete(envMap, "NO_PROXY")
+		removedProxy := false
+		for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY"} {
+			if val, ok := envMap[key].(string); ok && (proxyURL == "" || val == proxyURL) {
+				delete(envMap, key)
+				removedProxy = true
+			}
+		}
+		if removedProxy {
+			if val, ok := envMap["NO_PROXY"].(string); ok && val == "localhost,127.0.0.1,::1" {
+				delete(envMap, "NO_PROXY")
+			}
+		}
+		if !removedProxy {
+			continue
+		}
 		if len(envMap) == 0 {
 			delete(doc, "env")
 		} else {

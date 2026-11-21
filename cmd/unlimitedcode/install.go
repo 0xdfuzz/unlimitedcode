@@ -199,16 +199,14 @@ func cmdUninstall(args []string) {
 		fmt.Printf("autostart removed %s\n", vbs)
 	}
 
-	_, _ = setup.ClearOpenCodeServiceEnv()
-	for _, bin := range opencode.FindAll() {
-		for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"} {
-			_ = exec.Command(bin, "service", "unset", "env", key).Run()
+	proxyURL := "http://" + cfg.Listen
+	cleared, _ := setup.ClearOpenCodeServiceEnv(proxyURL)
+	if len(cleared) > 0 {
+		fmt.Println("proxy     cleared from OpenCode service env")
+		if restartOpenCodeServices() {
+			fmt.Println("opencode  service restarted")
 		}
 	}
-	if restartOpenCodeServices() {
-		fmt.Println("opencode  service restarted")
-	}
-	fmt.Println("proxy     cleared from OpenCode service env")
 
 	if *purge {
 		home := config.Home()
