@@ -210,15 +210,9 @@ func cmdInstall(args []string, interactive bool) {
 }
 
 func showInteractiveDiagnostics() {
-	cmdDoctor(nil)
+	fmt.Println("Shareable diagnostic report (usernames, device IDs & tokens redacted):")
 	fmt.Println()
-	cfg, err := config.Load("")
-	if err != nil {
-		cfg = config.Default()
-	}
-	if setup.Health(cfg.Control) {
-		cmdStatus(nil)
-	}
+	cmdReport(nil)
 }
 
 func isAlreadyInstalled() bool {

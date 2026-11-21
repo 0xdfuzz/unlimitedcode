@@ -161,3 +161,23 @@ func TestReconnectHealsFailedSpare(t *testing.T) {
 		t.Fatalf("expected Reconnect to trigger recovery of failed spare slot-0, got %q", pool.slots[0].state)
 	}
 }
+
+func TestBurntPersistence(t *testing.T) {
+	dir := t.TempDir()
+	p1, err := NewPool(Options{StateDir: dir, Size: 2})
+	if err != nil {
+		t.Fatalf("NewPool p1: %v", err)
+	}
+	p1.markBurnt("2a09:bac5:b91:305a::/64")
+	p1.Close()
+
+	p2, err := NewPool(Options{StateDir: dir, Size: 2})
+	if err != nil {
+		t.Fatalf("NewPool p2: %v", err)
+	}
+	defer p2.Close()
+
+	if !p2.isBurnt("2a09:bac5:b91:305a::/64") {
+		t.Fatal("expected burnt prefix to persist across Pool restart")
+	}
+}

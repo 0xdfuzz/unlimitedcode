@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"unlimitedcode/internal/config"
@@ -109,6 +111,7 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 
 	checkRotate(cfg, add)
 	checkPlugin(add)
+	checkConflicts(cfg, add)
 
 	return checks
 }
@@ -219,4 +222,62 @@ func health(ctx context.Context, addr string) (string, error) {
 		return "", fmt.Errorf("health not ok")
 	}
 	return fmt.Sprintf("running %s at %s", payload.Version, addr), nil
+}
+
+func checkConflicts(cfg config.Config, add func(string, string, string)) {
+	var found []string
+
+	// Detect conflicting third-party OpenCode proxy tools left on disk.
+	var dirs []struct {
+		label string
+		path  string
+	}
+	if runtime.GOOS == "windows" {
+		if local := os.Getenv("LOCALAPPDATA"); local != "" {
+			dirs = append(dirs,
+				struct{ label, path string }{"openhop", filepath.Join(local, "openhop")},
+				struct{ label, path string }{"opencode-unlimited", filepath.Join(local, "opencode-unlimited")},
+				struct{ label, path string }{"opencode-infinite", filepath.Join(local, "opencode-infinite")},
+			)
+		}
+	} else if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs,
+			struct{ label, path string }{"openhop", filepath.Join(home, ".local", "state", "openhop")},
+			struct{ label, path string }{"opencode-infinite", filepath.Join(home, ".local", "state", "opencode-infinite")},
+		)
+	}
+	for _, d := range dirs {
+		if info, err := os.Stat(d.path); err == nil && info.IsDir() {
+			found = append(found, d.label+" directory present ("+d.path+")")
+		}
+	}
+
+	// Detect active conflicting loopback proxies (Cloudflare WARP :40000, OpenHop :41987).
+	for _, p := range []struct {
+		label string
+		addr  string
+	}{
+		{"Cloudflare WARP proxy (127.0.0.1:40000)", "127.0.0.1:40000"},
+		{"OpenHop proxy (127.0.0.1:41987)", "127.0.0.1:41987"},
+	} {
+		if conn, err := net.DialTimeout("tcp", p.addr, 150*time.Millisecond); err == nil {
+			conn.Close()
+			found = append(found, p.label+" is running")
+		}
+	}
+
+	// Detect conflicting HTTPS_PROXY in current environment.
+	wantProxy := "http://" + cfg.Listen
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy"} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" && !strings.EqualFold(val, wantProxy) {
+			found = append(found, fmt.Sprintf("%s=%s (expected %s)", key, val, wantProxy))
+			break
+		}
+	}
+
+	if len(found) == 0 {
+		add("conflicts", OK, "none detected")
+		return
+	}
+	add("conflicts", Warn, strings.Join(found, "; ")+" — uninstall/disable conflicting tools and use official OpenCode")
 }

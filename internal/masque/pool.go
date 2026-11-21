@@ -146,6 +146,8 @@ func NewPool(opts Options) (*Pool, error) {
 		cancel:    cancel,
 	}
 
+	p.loadBurnt()
+
 	p.slots = make([]*slot, opts.Size)
 	for i := 0; i < opts.Size; i++ {
 		p.slots[i] = &slot{
@@ -578,6 +580,7 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 	s.mu.Unlock()
 
 	var lastErr error
+	enrollErr := false
 	for attempt := 1; attempt <= maxRecycleTries; attempt++ {
 		if ctx.Err() != nil {
 			s.setFailed(ctx.Err())
@@ -586,11 +589,15 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 
 		var nextCfg slotConfig
 		var err error
-		// Try fast key re-enrollment first; if it fails or lands on a sticky/burnt
-		// /64 prefix (attempt >= 2), register a brand-new WARP device ID so
-		// Cloudflare allocates a fresh IPv6 /64 pool.
-		if attempt == 1 && prev.ID != "" && prev.AccessToken != "" {
+		// Prefer lightweight key re-enrollment (PATCH /reg/<id>) on the first two
+		// tries — it rotates the IPv6 /64 most of the time without hitting
+		// Cloudflare's stricter POST /reg rate limit (1015). Fall back to
+		// registering a brand-new WARP device on attempt >= 3 or if PATCH fails.
+		if attempt <= 2 && !enrollErr && prev.ID != "" && prev.AccessToken != "" {
 			nextCfg, err = enrollNewKey(ctx, prev)
+			if err != nil {
+				enrollErr = true
+			}
 		} else {
 			nextCfg, err = registerAndEnroll(ctx)
 		}
@@ -848,6 +855,60 @@ func lookupAAAA(ctx context.Context, host string) string {
 	return ""
 }
 
+func (p *Pool) burntPath() string {
+	return filepath.Join(p.stateDir, "burnt.json")
+}
+
+func (p *Pool) loadBurnt() {
+	raw, err := os.ReadFile(p.burntPath())
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	var saved map[string]int64
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		return
+	}
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k, unixSec := range saved {
+		exp := time.Unix(unixSec, 0)
+		if now.Before(exp) && len(p.burnt) < maxBurntEntries {
+			p.burnt[k] = exp
+		}
+	}
+}
+
+func (p *Pool) saveBurntLocked() {
+	out := make(map[string]int64, len(p.burnt))
+	for k, exp := range p.burnt {
+		out[k] = exp.Unix()
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return
+	}
+	raw = append(raw, '\n')
+	tmp, err := os.CreateTemp(p.stateDir, ".burnt-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return
+	}
+	_ = os.Chmod(tmpName, 0o600)
+	if err := os.Rename(tmpName, p.burntPath()); err != nil {
+		os.Remove(tmpName)
+	}
+}
+
 func (p *Pool) markBurnt(prefix string) {
 	if prefix == "" {
 		return
@@ -864,6 +925,7 @@ func (p *Pool) markBurnt(prefix string) {
 		}
 	}
 	p.burnt[prefix] = expiry
+	p.saveBurntLocked()
 }
 
 func (p *Pool) isBurnt(prefix string) bool {

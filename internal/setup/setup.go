@@ -143,7 +143,10 @@ func SetOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 		}
 		envMap["HTTPS_PROXY"] = proxyURL
 		envMap["HTTP_PROXY"] = proxyURL
+		envMap["https_proxy"] = proxyURL
+		envMap["http_proxy"] = proxyURL
 		envMap["NO_PROXY"] = "localhost,127.0.0.1,::1"
+		envMap["no_proxy"] = "localhost,127.0.0.1,::1"
 		doc["env"] = envMap
 
 		out, err := json.MarshalIndent(doc, "", "  ")
@@ -182,15 +185,17 @@ func ClearOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 			continue
 		}
 		removedProxy := false
-		for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY"} {
+		for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
 			if val, ok := envMap[key].(string); ok && (proxyURL == "" || val == proxyURL) {
 				delete(envMap, key)
 				removedProxy = true
 			}
 		}
 		if removedProxy {
-			if val, ok := envMap["NO_PROXY"].(string); ok && val == "localhost,127.0.0.1,::1" {
-				delete(envMap, "NO_PROXY")
+			for _, key := range []string{"NO_PROXY", "no_proxy"} {
+				if val, ok := envMap[key].(string); ok && val == "localhost,127.0.0.1,::1" {
+					delete(envMap, key)
+				}
 			}
 		}
 		if !removedProxy {

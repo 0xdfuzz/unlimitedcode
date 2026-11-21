@@ -53,6 +53,8 @@ func candidates() []string {
 		if local := os.Getenv("LOCALAPPDATA"); local != "" {
 			out = append(out,
 				filepath.Join(local, "npm", "node_modules", "@opencode", "cli", "bin", "opencode.exe"),
+				filepath.Join(local, "Programs", "ai.opencode.desktop", "resources", "opencode-cli.exe"),
+				filepath.Join(local, "Programs", "ai.opencode.desktop", "resources", "opencode.exe"),
 				filepath.Join(local, "Programs", "OpenCode", "resources", "opencode-cli.exe"),
 				filepath.Join(local, "Programs", "OpenCode", "resources", "opencode.exe"),
 				filepath.Join(local, "OpenCode", "resources", "opencode-cli.exe"),

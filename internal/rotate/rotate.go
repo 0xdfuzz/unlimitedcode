@@ -73,17 +73,23 @@ type Stats struct {
 }
 
 type Manager struct {
-	gate  Gate
-	rec   Reconnector
-	opts  Options
-	log   Logger
-	now   func() time.Time
-	mu    sync.Mutex
-	run   *call
-	lastF time.Time
-	times []time.Time
-	stats Stats
+	gate   Gate
+	rec    Reconnector
+	opts   Options
+	log    Logger
+	now    func() time.Time
+	mu     sync.Mutex
+	run    *call
+	lastF  time.Time
+	lastOK time.Time
+	times  []time.Time
+	stats  Stats
 }
+
+// transportGrace suppresses duplicate proxy.transport-error hops triggered by
+// sibling sub-agents whose sockets were intentionally reset by CloseTunnels()
+// during a rotation that just succeeded.
+const transportGrace = 5 * time.Second
 
 type call struct {
 	done   chan struct{}
@@ -141,8 +147,15 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 		}
 	}
 
+	now := m.now()
+	if req.Reason == "proxy.transport-error" && !m.lastOK.IsZero() && now.Sub(m.lastOK) < transportGrace {
+		m.stats.Coalesced++
+		m.mu.Unlock()
+		return Result{Status: "ok", Coalesced: true}
+	}
+
 	if !m.lastF.IsZero() && m.opts.Cooldown > 0 {
-		if waited := m.now().Sub(m.lastF); waited < m.opts.Cooldown {
+		if waited := now.Sub(m.lastF); waited < m.opts.Cooldown {
 			remaining := m.opts.Cooldown - waited
 			m.mu.Unlock()
 			return Result{
@@ -152,7 +165,6 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 		}
 	}
 
-	now := m.now()
 	if m.limitedLocked(now) {
 		m.stats.Limited++
 		m.mu.Unlock()
@@ -175,6 +187,7 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 	m.stats.LastAt = &finished
 	if result.Status == "ok" {
 		m.lastF = time.Time{}
+		m.lastOK = finished
 	} else {
 		m.stats.Failures++
 		m.lastF = finished

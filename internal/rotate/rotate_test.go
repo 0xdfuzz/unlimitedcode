@@ -216,3 +216,46 @@ func TestHopRateLimit(t *testing.T) {
 		t.Fatalf("after window = %+v", result)
 	}
 }
+
+func TestHopTransportGrace(t *testing.T) {
+	gate := &fakeGate{events: &[]string{}}
+	rec := &fakeReconnector{}
+	now := time.Unix(2000, 0)
+	m, err := New(Options{
+		Gate:        gate,
+		Reconnector: rec,
+		Timeout:     time.Second,
+		Now:         func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res := m.Hop(context.Background(), Request{Reason: "provider.free-limit"}); res.Status != "ok" {
+		t.Fatalf("first hop = %+v", res)
+	}
+	if rec.callCount() != 1 {
+		t.Fatalf("reconnects = %d, want 1", rec.callCount())
+	}
+
+	// Sibling sub-agent receives ECONNRESET 50ms later due to CloseTunnels():
+	// must coalesce without rotating or burning the brand-new slot.
+	now = now.Add(50 * time.Millisecond)
+	res := m.Hop(context.Background(), Request{Reason: "proxy.transport-error"})
+	if res.Status != "ok" || !res.Coalesced {
+		t.Fatalf("expected coalesced transport hop, got %+v", res)
+	}
+	if rec.callCount() != 1 {
+		t.Fatalf("reconnects = %d, want 1 (should not double-rotate)", rec.callCount())
+	}
+
+	// Genuine provider.free-limit on a burnt warm slot must still rotate immediately.
+	now = now.Add(200 * time.Millisecond)
+	res = m.Hop(context.Background(), Request{Reason: "provider.free-limit"})
+	if res.Status != "ok" || res.Coalesced {
+		t.Fatalf("expected real free-limit hop, got %+v", res)
+	}
+	if rec.callCount() != 2 {
+		t.Fatalf("reconnects = %d, want 2", rec.callCount())
+	}
+}

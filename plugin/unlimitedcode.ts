@@ -5,7 +5,8 @@ import { join } from "node:path"
 
 const DEFAULT_LISTEN = "127.0.0.1:42987"
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
-const MAX_ATTEMPTS = 6
+// OpenCode's ModelRetry policy emits attempt = 2..11 (10 retries per step).
+const MAX_ATTEMPTS = 11
 const MAX_SESSION_ALIASES = 200
 const ROTATE_TIMEOUT_MS = 55_000
 
@@ -65,6 +66,8 @@ function applySessionAlias(headers: Record<string, string> | Headers, sessionID:
   const keys = [
     "x-opencode-session",
     "x-opencode-session-id",
+    "x-opencode-parent-session-id",
+    "x-parent-session-id",
     "x-session-affinity",
     "x-session-id",
     "X-Session-Id",
@@ -82,6 +85,8 @@ function applySessionAlias(headers: Record<string, string> | Headers, sessionID:
     if (
       low === "x-opencode-session" ||
       low === "x-opencode-session-id" ||
+      low === "x-opencode-parent-session-id" ||
+      low === "x-parent-session-id" ||
       low === "x-session-affinity" ||
       low === "x-session-id"
     ) {
@@ -179,11 +184,22 @@ function ensureDaemonRunning(): Promise<boolean> {
   return daemonBootPromise
 }
 
+function isLoopbackProxy(val: string | undefined): boolean {
+  if (!val) return false
+  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]):/i.test(val.trim())
+}
+
 function ensureProxyEnv(): void {
   const listen = process.env.UNLIMITEDCODE_LISTEN || readConfigJSON()?.listen || DEFAULT_LISTEN
   const proxyURL = listen.startsWith("http") ? listen : `http://${listen}`
-  if (!process.env.HTTPS_PROXY) process.env.HTTPS_PROXY = proxyURL
-  if (!process.env.HTTP_PROXY) process.env.HTTP_PROXY = proxyURL
+  // Always take over if empty or pointing to a stale loopback proxy (e.g. leftover
+  // WARP :40000, OpenHop :41987, or OpenCode-Infinite gate) — and keep lowercase
+  // https_proxy/http_proxy in sync since Bun checks lowercase before uppercase.
+  for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] as const) {
+    if (!process.env[key] || isLoopbackProxy(process.env[key])) {
+      process.env[key] = proxyURL
+    }
+  }
   if (!process.env.NO_PROXY) process.env.NO_PROXY = "localhost,127.0.0.1,::1"
   if (!process.env.no_proxy) process.env.no_proxy = "localhost,127.0.0.1,::1"
 }
@@ -307,19 +323,13 @@ async function setup(ctx: any): Promise<void> {
   if (typeof ctx?.session?.hook !== "function") return
 
   try {
+    // Only hook model.request (not http.request): OpenCode already passes all
+    // session & parent-session headers here, and omitting http.request keeps
+    // native zero-copy SSE streaming without Response re-wrapping overhead.
     await ctx.session.hook("model.request", (event: any) => {
       const sid = String(event?.sessionID ?? "")
       if (sid && event?.headers) {
         applySessionAlias(event.headers, sid)
-      }
-    })
-  } catch {}
-
-  try {
-    await ctx.session.hook("http.request", (event: any) => {
-      const sid = String(event?.sessionID ?? "")
-      if (sid && event?.request?.headers) {
-        applySessionAlias(event.request.headers, sid)
       }
     })
   } catch {}
@@ -329,7 +339,7 @@ async function setup(ctx: any): Promise<void> {
     const errMsg = errorText(event?.error)
     const status = Number(event?.error?.status ?? event?.error?.statusCode ?? 0)
     const sid = String(event?.sessionID ?? "")
-    const attempt = Number(event?.attempt ?? 1)
+    const attempt = Number(event?.attempt ?? 2)
 
     const isFreeLimit =
       errType === "provider.free-limit" ||
@@ -337,24 +347,26 @@ async function setup(ctx: any): Promise<void> {
         (status === 429 || /FreeUsageLimitError|free.?usage.?limit|free.?limit|today's free messages/i.test(errMsg)))
 
     if (!isFreeLimit) {
-      // Self-heal proxy/tunnel failures (e.g. daemon stopped or MASQUE edge glitch)
-      // invisibly without breaking the active chat. Bounded to 3 attempts so offline
-      // networks fail fast instead of looping.
+      // Self-heal proxy/tunnel failures invisibly. On the first transport reset
+      // (attempt <= 2), retry cleanly without rotating: when a sibling sub-agent
+      // just rotated, CloseTunnels() resets active sockets so they move onto the
+      // new slot; rotating again would burn the brand-new slot with 0 bytes sent.
+      // Only trigger a transport rotate if the failure persists on attempt >= 3.
       const isTransport =
         errType === "provider.transport" ||
         /ECONNREFUSED|Unable to connect|ERR_PROXY_TUNNEL|502 Bad Gateway|ECONNRESET|socket connection was closed/i.test(
           errMsg,
         )
-      if (attempt <= 3 && isTransport) {
+      if (attempt <= 4 && isTransport) {
         const wasUp = await isDaemonHealthy()
         const up = wasUp || (await ensureDaemonRunning())
         if (up) {
           ensureProxyEnv()
-          if (wasUp && isOpenCodeProvider(event)) {
+          if (wasUp && attempt >= 3 && isOpenCodeProvider(event)) {
             if (sid) rotateSessionAlias(sid)
             await requestRotate(event, "proxy.transport-error")
           }
-          const decision = { retry: true, delay: 200 }
+          const decision = { retry: true, delay: 150 }
           event.decision = decision
           return decision
         }
@@ -364,13 +376,6 @@ async function setup(ctx: any): Promise<void> {
 
     if (attempt > MAX_ATTEMPTS) return { retry: false, delay: 0 }
 
-    if (sid && attempt === 1) {
-      rotateSessionAlias(sid)
-      const decision = { retry: true, delay: 0 }
-      event.decision = decision
-      return decision
-    }
-
     await ensureDaemonRunning()
     ensureProxyEnv()
     if (sid) rotateSessionAlias(sid)
@@ -379,7 +384,7 @@ async function setup(ctx: any): Promise<void> {
       if (attempt < MAX_ATTEMPTS) {
         // Give the MASQUE pool / network a brief window to recover before
         // letting OpenCode emit session.step.failed and lock the Desktop UI.
-        const backoff = { retry: true, delay: 4000 }
+        const backoff = { retry: true, delay: 3000 }
         event.decision = backoff
         return backoff
       }

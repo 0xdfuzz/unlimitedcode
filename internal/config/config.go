@@ -76,8 +76,8 @@ func Default() Config {
 			Enabled:             true,
 			TimeoutSeconds:      45,
 			FailureCooldownSecs: 5,
-			MaxPerHour:          30,
-			MaxPerDay:           300,
+			MaxPerHour:          60,
+			MaxPerDay:           500,
 		},
 		Limits: Limits{
 			MaxTunnels:         128,
