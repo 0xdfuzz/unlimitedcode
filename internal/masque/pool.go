@@ -243,6 +243,7 @@ func (p *Pool) Close() {
 		p.closeSlotClient(s)
 	}
 	p.wg.Wait()
+	directTransport.CloseIdleConnections()
 }
 
 // Name implements upstream.Dialer.
@@ -599,11 +600,18 @@ func (p *Pool) resolveIPv6Target(ctx context.Context, addr string) string {
 	p.mu.Unlock()
 
 	ip := lookupAAAA(ctx, key)
-	ttl := 5 * time.Minute
+	ttl := 15 * time.Minute
 	if ip == "" {
 		ttl = 60 * time.Second
 	}
 	p.mu.Lock()
+	if len(p.aaaaCache) >= 64 {
+		for k, v := range p.aaaaCache {
+			if !now.Before(v.expires) {
+				delete(p.aaaaCache, k)
+			}
+		}
+	}
 	p.aaaaCache[key] = aaaaEntry{ip: ip, expires: now.Add(ttl)}
 	p.mu.Unlock()
 	if ip != "" {

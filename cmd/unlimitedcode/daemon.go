@@ -46,7 +46,7 @@ func cmdDaemon(args []string) {
 		}
 	}()
 
-	logger, err := logx.New(config.LogPath(), 10<<20, 3, true)
+	logger, err := logx.New(config.LogPath(), 2<<20, 2, *parentPID == 0)
 	if err != nil {
 		fatal(fmt.Errorf("open log: %w", err))
 	}

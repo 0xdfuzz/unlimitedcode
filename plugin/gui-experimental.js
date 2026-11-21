@@ -958,7 +958,7 @@ exports.default = sdk.Plugin.define({
         if (st?.promptUpdate) {
           maybePromptUpdate(st)
         } else {
-          // Wait briefly for the daemon's one-shot startup check; never interrupt mid-session.
+          // Wait briefly for the daemon's one-shot startup check; never poll or interrupt mid-session.
           followup = setTimeout(() => {
             void refresh().then((next) => {
               if (next?.promptUpdate) maybePromptUpdate(next)
@@ -966,12 +966,8 @@ exports.default = sdk.Plugin.define({
           }, 2500)
         }
       })()
-      const timer = setInterval(() => {
-        void refresh()
-      }, 60000)
       onCleanup(() => {
         if (followup) clearTimeout(followup)
-        clearInterval(timer)
       })
     })
 

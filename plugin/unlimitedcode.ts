@@ -3,8 +3,10 @@ import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+const DEFAULT_LISTEN = "127.0.0.1:42987"
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const MAX_ATTEMPTS = 6
+const MAX_SESSION_ALIASES = 200
 const ROTATE_TIMEOUT_MS = 55_000
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -12,8 +14,6 @@ const sessionAliases = new Map<string, string>()
 
 let lastIDTs = 0
 let idCounter = 0
-let lastKnownRotations = -1
-let lastSyncAt = 0
 
 // Matches OpenCode's Identifier.descending() contract ("ses_" + 12 hex of ~(ms*0x1000+counter) + 14 Base62).
 function generateSessionID(): string {
@@ -42,7 +42,13 @@ function generateSessionID(): string {
 
 function rotateSessionAlias(sessionID: string): string {
   const alias = generateSessionID()
-  if (sessionID) sessionAliases.set(sessionID, alias)
+  if (sessionID) {
+    if (sessionAliases.size >= MAX_SESSION_ALIASES && !sessionAliases.has(sessionID)) {
+      const oldest = sessionAliases.keys().next().value
+      if (oldest !== undefined) sessionAliases.delete(oldest)
+    }
+    sessionAliases.set(sessionID, alias)
+  }
   return alias
 }
 
@@ -165,26 +171,13 @@ async function ensureDaemonRunning(): Promise<boolean> {
   return false
 }
 
-async function syncDaemonState(force = false): Promise<any | null> {
-  const now = Date.now()
-  if (!force && now - lastSyncAt < 10_000) return null
-  lastSyncAt = now
-  const st = await controlCall("/status", "GET", undefined, 1_500)
-  if (!st) return null
-  if (st.listen) {
-    const proxyURL = `http://${st.listen}`
-    if (!process.env.HTTPS_PROXY) process.env.HTTPS_PROXY = proxyURL
-    if (!process.env.HTTP_PROXY) process.env.HTTP_PROXY = proxyURL
-    if (!process.env.NO_PROXY) process.env.NO_PROXY = "localhost,127.0.0.1,::1"
-    if (!process.env.no_proxy) process.env.no_proxy = "localhost,127.0.0.1,::1"
-  }
-  const rot = Number(st.hop?.count ?? 0)
-  if (lastKnownRotations >= 0 && rot !== lastKnownRotations) {
-    // Manual /rotate from TUI or Desktop also rotates all wire session IDs.
-    sessionAliases.clear()
-  }
-  lastKnownRotations = rot
-  return st
+function ensureProxyEnv(): void {
+  const listen = process.env.UNLIMITEDCODE_LISTEN || readConfigJSON()?.listen || DEFAULT_LISTEN
+  const proxyURL = listen.startsWith("http") ? listen : `http://${listen}`
+  if (!process.env.HTTPS_PROXY) process.env.HTTPS_PROXY = proxyURL
+  if (!process.env.HTTP_PROXY) process.env.HTTP_PROXY = proxyURL
+  if (!process.env.NO_PROXY) process.env.NO_PROXY = "localhost,127.0.0.1,::1"
+  if (!process.env.no_proxy) process.env.no_proxy = "localhost,127.0.0.1,::1"
 }
 
 async function controlCall(path: string, method = "GET", body?: any, timeoutMs = 8_000): Promise<any | null> {
@@ -248,14 +241,13 @@ async function requestRotate(event: any): Promise<{ retry: boolean; delay: numbe
 
 async function setup(ctx: any): Promise<void> {
   if (await ensureDaemonRunning()) {
-    await syncDaemonState(true)
+    ensureProxyEnv()
   }
 
   if (typeof ctx?.session?.hook !== "function") return
 
   try {
-    await ctx.session.hook("model.request", async (event: any) => {
-      await syncDaemonState(false)
+    await ctx.session.hook("model.request", (event: any) => {
       const sid = String(event?.sessionID ?? "")
       if (sid && event?.headers) {
         applySessionAlias(event.headers, sid)
@@ -275,9 +267,6 @@ async function setup(ctx: any): Promise<void> {
   await ctx.session.hook("retry", async (event: any) => {
     if (event?.error?.type !== "provider.free-limit") return
 
-    await ensureDaemonRunning()
-    await syncDaemonState(true)
-
     const sid = String(event?.sessionID ?? "")
     const attempt = Number(event?.attempt ?? 1)
     if (attempt > MAX_ATTEMPTS) return { retry: false, delay: 0 }
@@ -289,6 +278,8 @@ async function setup(ctx: any): Promise<void> {
       return decision
     }
 
+    await ensureDaemonRunning()
+    ensureProxyEnv()
     if (sid) rotateSessionAlias(sid)
     const decision = await requestRotate(event)
     if (!decision) return { retry: false, delay: 0 }

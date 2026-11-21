@@ -323,7 +323,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	upstreamName := dialer.Name()
 	s.event("connect authority=%s upstream=%q", authority, upstreamName)
-	s.logger.Printf("CONNECT %s via %s", authority, upstreamName)
 
 	clientConn := net.Conn(client)
 	remoteConn := net.Conn(remote)
@@ -360,15 +359,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	remote.Close()
 
 	s.active.Add(-1)
-	s.track(client, false)
-	s.track(remote, false)
+	if routedViaEgress {
+		s.track(client, false)
+		s.track(remote, false)
+	}
 	s.event("close authority=%s dur=%s up=%d down=%d",
-		authority,
-		time.Since(start).Round(time.Millisecond),
-		up,
-		down,
-	)
-	s.logger.Printf("CONNECT %s closed dur=%s up=%d down=%d",
 		authority,
 		time.Since(start).Round(time.Millisecond),
 		up,

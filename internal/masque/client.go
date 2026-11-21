@@ -337,7 +337,7 @@ func buildTLSConfig(cfg slotConfig) (*tls.Config, error) {
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "UnlimitedCode"},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
@@ -381,8 +381,10 @@ type l4Client struct {
 	quicConfig *quic.Config
 	endpoints  []*net.UDPAddr
 
+	dialMu     sync.Mutex // serializes QUIC reconnects to prevent duplicate handshakes
 	mu         sync.Mutex
 	udpConn    *net.UDPConn
+	quicTr     *quic.Transport
 	quicConn   *quic.Conn
 	clientConn *http3.ClientConn
 	closed     bool
@@ -407,7 +409,7 @@ func newL4Client(cfg slotConfig) (*l4Client, error) {
 		tlsConfig: tlsCfg,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
-			KeepAlivePeriod: 15 * time.Second,
+			KeepAlivePeriod: 30 * time.Second,
 			MaxIdleTimeout:  5 * time.Minute,
 		},
 		endpoints: endpoints,
@@ -481,7 +483,37 @@ func (c *l4Client) dialOnce(ctx context.Context, target string) (net.Conn, error
 	}, nil
 }
 
+func closeQUICResources(qc *quic.Conn, tr *quic.Transport, uc *net.UDPConn, reason string) {
+	if qc != nil {
+		_ = qc.CloseWithError(0, reason)
+	}
+	if tr != nil {
+		_ = tr.Close()
+	}
+	if uc != nil {
+		_ = uc.Close()
+	}
+}
+
 func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr, error) {
+	// Fast path: reuse healthy connection without taking dialMu.
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, nil, net.ErrClosed
+	}
+	if c.clientConn != nil && c.quicConn != nil && c.quicConn.Context().Err() == nil {
+		h3 := c.clientConn
+		addr := c.udpConn.LocalAddr()
+		c.mu.Unlock()
+		return h3, addr, nil
+	}
+	c.mu.Unlock()
+
+	// Slow path: serialize reconnects so concurrent dials share one QUIC handshake.
+	c.dialMu.Lock()
+	defer c.dialMu.Unlock()
+
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -494,25 +526,20 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 			c.mu.Unlock()
 			return h3, addr, nil
 		}
-		// Underlying QUIC session already died; clean it up before dialing.
-		qc := c.quicConn
-		uc := c.udpConn
+		qc, tr, uc := c.quicConn, c.quicTr, c.udpConn
 		c.clientConn = nil
 		c.quicConn = nil
+		c.quicTr = nil
 		c.udpConn = nil
 		c.mu.Unlock()
-		if qc != nil {
-			_ = qc.CloseWithError(0, "stale")
-		}
-		if uc != nil {
-			_ = uc.Close()
-		}
+		closeQUICResources(qc, tr, uc, "stale")
 	} else {
 		c.mu.Unlock()
 	}
 
 	var (
 		udpConn  *net.UDPConn
+		quicTr   *quic.Transport
 		quicConn *quic.Conn
 		lastErr  error
 	)
@@ -532,6 +559,7 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		tr := &quic.Transport{Conn: uc, ConnectionIDLength: 20}
 		qc, err := tr.Dial(ctx, ep, c.tlsConfig, c.quicConfig)
 		if err != nil {
+			_ = tr.Close()
 			_ = uc.Close()
 			lastErr = err
 			if ctx.Err() != nil {
@@ -540,6 +568,7 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 			continue
 		}
 		udpConn = uc
+		quicTr = tr
 		quicConn = qc
 		lastErr = nil
 		break
@@ -552,19 +581,11 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		_ = quicConn.CloseWithError(0, "closed")
-		_ = udpConn.Close()
+		closeQUICResources(quicConn, quicTr, udpConn, "closed")
 		return nil, nil, net.ErrClosed
 	}
-	if c.clientConn != nil {
-		existing := c.clientConn
-		addr := c.udpConn.LocalAddr()
-		c.mu.Unlock()
-		_ = quicConn.CloseWithError(0, "duplicate")
-		_ = udpConn.Close()
-		return existing, addr, nil
-	}
 	c.udpConn = udpConn
+	c.quicTr = quicTr
 	c.quicConn = quicConn
 	c.clientConn = h3
 	addr := udpConn.LocalAddr()
@@ -578,37 +599,27 @@ func (c *l4Client) resetConn(expected *http3.ClientConn) {
 		c.mu.Unlock()
 		return
 	}
-	qc := c.quicConn
-	uc := c.udpConn
+	qc, tr, uc := c.quicConn, c.quicTr, c.udpConn
 	c.clientConn = nil
 	c.quicConn = nil
+	c.quicTr = nil
 	c.udpConn = nil
 	c.mu.Unlock()
 
-	if qc != nil {
-		_ = qc.CloseWithError(0, "reset")
-	}
-	if uc != nil {
-		_ = uc.Close()
-	}
+	closeQUICResources(qc, tr, uc, "reset")
 }
 
 func (c *l4Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
-	qc := c.quicConn
-	uc := c.udpConn
+	qc, tr, uc := c.quicConn, c.quicTr, c.udpConn
 	c.clientConn = nil
 	c.quicConn = nil
+	c.quicTr = nil
 	c.udpConn = nil
 	c.mu.Unlock()
 
-	if qc != nil {
-		_ = qc.CloseWithError(0, "shutdown")
-	}
-	if uc != nil {
-		_ = uc.Close()
-	}
+	closeQUICResources(qc, tr, uc, "shutdown")
 	return nil
 }
 

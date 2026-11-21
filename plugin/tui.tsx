@@ -893,8 +893,12 @@ async function openStatusModal(context: any, status?: any): Promise<void> {
   } catch {}
 }
 
-function PromptBadge(props: { context: any; onClick: () => void }) {
-  const [state, setState] = createSignal<"auto" | "offline">("auto")
+function PromptBadge(props: {
+  context: any
+  state: () => "auto" | "offline"
+  setState: (next: "auto" | "offline") => void
+  onClick: () => void
+}) {
   const [hovered, setHovered] = createSignal(false)
 
   const refresh = async (): Promise<any | null> => {
@@ -904,7 +908,7 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
         st = await controlCall("/status", "GET", undefined, 2_000)
       }
     }
-    setState(st ? "auto" : "offline")
+    props.setState(st ? "auto" : "offline")
     return st
   }
 
@@ -925,20 +929,17 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
         await checkStartupUpdate(st)
       } else {
         // Give the daemon's one-shot startup check a brief moment to finish;
-        // never pop up a dialog mid-session afterwards.
+        // never poll or pop up a dialog mid-session afterwards.
         followup = setTimeout(() => {
           void controlCall("/status", "GET", undefined, 1_500).then((next) => {
+            if (next) props.setState("auto")
             if (next?.update_available) void checkStartupUpdate(next)
           })
         }, 2_500)
       }
     })()
-    const timer = setInterval(() => {
-      void refresh()
-    }, 60_000)
     onCleanup(() => {
       if (followup) clearTimeout(followup)
-      clearInterval(timer)
     })
   })
 
@@ -946,7 +947,7 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
   const labelColor = () =>
     hovered()
       ? theme().text.base
-      : state() === "auto"
+      : props.state() === "auto"
         ? theme().text.feedback.success.base
         : theme().text.feedback.error.base
 
@@ -967,10 +968,19 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
 export default {
   id: "unlimitedcode",
   setup(context: any) {
+    const [badgeState, setBadgeState] = createSignal<"auto" | "offline">("auto")
+
     context.ui.slot({
       append: "prompt.footer",
       render() {
-        return <PromptBadge context={context} onClick={() => context.keymap.dispatch("unlimitedcode.menu")} />
+        return (
+          <PromptBadge
+            context={context}
+            state={badgeState}
+            setState={setBadgeState}
+            onClick={() => context.keymap.dispatch("unlimitedcode.menu")}
+          />
+        )
       },
     })
 
@@ -1000,6 +1010,7 @@ export default {
               palette: true,
               async run() {
                 const status = await controlCall("/status", "GET", undefined, 2_000)
+                setBadgeState(status ? "auto" : "offline")
                 const ip = shortenIPv6(status?.pool?.active_ip || "offline")
                 const ready = status?.pool?.slots?.filter((s: any) => s.state === "ready").length ?? 0
                 const total = status?.pool?.slots?.length ?? 0
@@ -1048,12 +1059,15 @@ export default {
 
                 if (choice === "update" && updateTag) {
                   await doApplyUpdate(context, updateTag)
+                  setBadgeState((await isDaemonHealthy()) ? "auto" : "offline")
                 } else if (choice === "stats") {
                   await openStatsModal(context)
                 } else if (choice === "rotate") {
-                  await doRotate(context)
+                  const st = await doRotate(context)
+                  setBadgeState(st ? "auto" : "offline")
                 } else if (choice === "restart") {
-                  await doRestartDaemon(context)
+                  const st = await doRestartDaemon(context)
+                  setBadgeState(st ? "auto" : "offline")
                 } else if (choice === "details") {
                   await openStatusModal(context, status)
                 }
