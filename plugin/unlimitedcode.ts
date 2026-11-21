@@ -220,14 +220,30 @@ function modelID(model: any): string {
   return String(model.modelID || model.id || model.name || "")
 }
 
-async function requestRotate(event: any): Promise<{ retry: boolean; delay: number } | null> {
+function isOpenCodeProvider(event: any): boolean {
+  const prov = String(event?.model?.providerID ?? event?.providerID ?? "").toLowerCase()
+  if (prov) return prov === "opencode"
+  const mid = modelID(event?.model).toLowerCase()
+  return mid.startsWith("opencode/") || mid.endsWith("-free") || mid === "big-pickle"
+}
+
+function errorText(err: any): string {
+  if (!err) return ""
+  if (typeof err === "string") return err
+  return [err.type, err.message, err.cause?.message, err.data?.message]
+    .filter(Boolean)
+    .map(String)
+    .join(" ")
+}
+
+async function requestRotate(event: any, type = "provider.free-limit"): Promise<{ retry: boolean; delay: number } | null> {
   const attempt = Number(event?.attempt ?? 1)
   if (attempt > MAX_ATTEMPTS) return null
   const result = await controlCall(
     "/event",
     "POST",
     {
-      type: "provider.free-limit",
+      type,
       session: String(event?.sessionID ?? ""),
       model: modelID(event?.model),
       agent: nameOf(event?.agent),
@@ -266,13 +282,28 @@ async function setup(ctx: any): Promise<void> {
 
   await ctx.session.hook("retry", async (event: any) => {
     const errType = String(event?.error?.type ?? "")
-    if (errType !== "provider.free-limit") {
-      // Self-heal if the local proxy daemon was stopped while OpenCode stayed open.
-      const errText = String(event?.error?.message ?? event?.error?.cause?.message ?? event?.error ?? "")
-      const attempt = Number(event?.attempt ?? 1)
-      if (attempt <= 2 && /ECONNREFUSED|Unable to connect|ERR_PROXY_TUNNEL/i.test(errText)) {
-        if (await ensureDaemonRunning()) {
+    const errMsg = errorText(event?.error)
+    const status = Number(event?.error?.status ?? event?.error?.statusCode ?? 0)
+    const sid = String(event?.sessionID ?? "")
+    const attempt = Number(event?.attempt ?? 1)
+
+    const isFreeLimit =
+      errType === "provider.free-limit" ||
+      (isOpenCodeProvider(event) && (status === 429 || /free.?limit|today's free messages/i.test(errMsg)))
+
+    if (!isFreeLimit) {
+      // Self-heal proxy/tunnel failures (e.g. daemon stopped or MASQUE edge glitch)
+      // invisibly without breaking the active chat. Bounded to 3 attempts so offline
+      // networks fail fast instead of looping.
+      if (attempt <= 3 && /ECONNREFUSED|Unable to connect|ERR_PROXY_TUNNEL|502 Bad Gateway|ECONNRESET|socket connection was closed/i.test(errMsg)) {
+        const wasUp = await isDaemonHealthy()
+        const up = wasUp || (await ensureDaemonRunning())
+        if (up) {
           ensureProxyEnv()
+          if (wasUp && isOpenCodeProvider(event)) {
+            if (sid) rotateSessionAlias(sid)
+            await requestRotate(event, "proxy.transport-error")
+          }
           const decision = { retry: true, delay: 200 }
           event.decision = decision
           return decision
@@ -281,8 +312,6 @@ async function setup(ctx: any): Promise<void> {
       return
     }
 
-    const sid = String(event?.sessionID ?? "")
-    const attempt = Number(event?.attempt ?? 1)
     if (attempt > MAX_ATTEMPTS) return { retry: false, delay: 0 }
 
     if (sid && attempt === 1) {
@@ -295,7 +324,7 @@ async function setup(ctx: any): Promise<void> {
     await ensureDaemonRunning()
     ensureProxyEnv()
     if (sid) rotateSessionAlias(sid)
-    const decision = await requestRotate(event)
+    const decision = await requestRotate(event, "provider.free-limit")
     if (!decision) return { retry: false, delay: 0 }
     event.decision = decision
     return decision

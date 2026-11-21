@@ -227,7 +227,7 @@ func (s *Server) eventHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "type is required", http.StatusBadRequest)
 		return
 	}
-	if ev.Type != "provider.free-limit" {
+	if ev.Type != "provider.free-limit" && ev.Type != "proxy.transport-error" {
 		writeJSON(w, rotate.Result{Status: "ignored"})
 		return
 	}
