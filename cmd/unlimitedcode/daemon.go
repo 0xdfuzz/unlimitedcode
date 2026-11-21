@@ -154,8 +154,12 @@ func cmdDaemon(args []string) {
 			logger.Printf("warning: rotate unavailable: %v", err)
 		} else {
 			rotManager = manager
-			logger.Printf("rotate enabled via masque pool (size=%d) limits=%d/h %d/day",
-				cfg.Egress.PoolSize, cfg.Rotate.MaxPerHour, cfg.Rotate.MaxPerDay)
+			if cfg.Rotate.MaxPerHour == 0 && cfg.Rotate.MaxPerDay == 0 {
+				logger.Printf("rotate enabled via masque pool (size=%d) limits=unlimited", cfg.Egress.PoolSize)
+			} else {
+				logger.Printf("rotate enabled via masque pool (size=%d) limits=%d/h %d/day",
+					cfg.Egress.PoolSize, cfg.Rotate.MaxPerHour, cfg.Rotate.MaxPerDay)
+			}
 		}
 	} else if cfg.Rotate.Enabled {
 		logger.Printf("rotate disabled: egress mode is %s", cfg.Egress.Mode)
