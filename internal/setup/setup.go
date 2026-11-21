@@ -17,7 +17,7 @@ func EnsureConfig(path string) (string, bool, error) {
 	if path == "" {
 		path = config.ConfigPath()
 	}
-	ensureInstalledAt(filepath.Dir(path))
+	EnsureInstalledAt(filepath.Dir(path))
 	if _, err := os.Stat(path); err == nil {
 		return path, false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -64,12 +64,14 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// ensureInstalledAt writes a one-time Unix millisecond timestamp marking when
-// UnlimitedCode was first installed so /unlimited-stats only counts free-tier
-// tokens used after installation. Preserves the existing timestamp across
-// upgrades and repairs, and seeds from config.json mtime when upgrading from
-// an older release that lacked the marker file.
-func ensureInstalledAt(dir string) {
+// EnsureInstalledAt writes a one-time Unix millisecond timestamp marking when
+// UnlimitedCode was first installed so usage stats only count free-tier tokens
+// used after installation. Preserves the existing timestamp across upgrades
+// and repairs, and seeds from config.json mtime when upgrading from older releases.
+func EnsureInstalledAt(dir string) {
+	if dir == "" {
+		dir = config.Home()
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
@@ -81,7 +83,7 @@ func ensureInstalledAt(dir string) {
 	if info, err := os.Stat(filepath.Join(dir, "config.json")); err == nil && !info.ModTime().IsZero() {
 		ts = info.ModTime().UnixMilli()
 	}
-	_ = os.WriteFile(marker, []byte(strconv.FormatInt(ts, 10)+"\n"), 0o600)
+	_ = writeAtomic(marker, []byte(strconv.FormatInt(ts, 10)+"\n"), 0o600)
 }
 
 func opencodeConfigDir() (string, error) {

@@ -40,7 +40,7 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 	if _, err := os.Stat(cfg.Path); err == nil {
 		add("config", OK, cfg.Path)
 	} else if os.IsNotExist(err) {
-		add("config", Warn, cfg.Path+" (missing, using defaults)")
+		add("config", OK, "built-in defaults (zero-config)")
 	} else {
 		add("config", Fail, err.Error())
 	}

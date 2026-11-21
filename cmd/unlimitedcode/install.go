@@ -171,15 +171,7 @@ func cmdInstall(args []string, interactive bool) {
 	}
 	fmt.Printf("binary    %s\n", installedBin)
 
-	cfgPath, created, err := setup.EnsureConfig(cfg.Path)
-	if err != nil {
-		fail(err)
-	}
-	state := "existing"
-	if created {
-		state = "created"
-	}
-	fmt.Printf("config    %s (%s)\n", cfgPath, state)
+	setup.EnsureInstalledAt(config.Home())
 
 	pluginPath, err := plugin.Install("")
 	if err != nil {
@@ -200,8 +192,8 @@ func cmdInstall(args []string, interactive bool) {
 	}
 
 	fmt.Println()
-	fmt.Println("Installed successfully! Restart OpenCode and enjoy :)")
-	fmt.Println("Inside OpenCode, try: /unlimited · /unlimited-stats · /rotate")
+	fmt.Println("Installed! Restart OpenCode and you're good to go.")
+	fmt.Println("Inside OpenCode, use /unlimited or /rotate.")
 	if interactive {
 		pauseIfWindows()
 	}

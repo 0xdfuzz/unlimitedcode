@@ -84,28 +84,24 @@ go build -trimpath -ldflags "-s -w -X main.version=0.3.2" -o unlimitedcode.exe .
 ## CLI Commands
 
 ```text
-unlimitedcode                         interactive menu
-unlimitedcode install   [--config P]  install binary, plugin & OpenCode proxy env
-unlimitedcode update    [--yes]       check & install latest GitHub release
-unlimitedcode uninstall [--keep-state] remove plugin, proxy env, and state
-unlimitedcode status    [--json]      show running daemon status
-unlimitedcode rotate    [--json]      rotate active egress IP now (alias: hop)
-unlimitedcode doctor                  check config, ports, egress, and plugin
-unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control API
-unlimitedcode version                 print version
+unlimitedcode              interactive menu
+unlimitedcode install      install binary, plugin & OpenCode proxy env
+unlimitedcode update       check & install latest GitHub release
+unlimitedcode uninstall    remove plugin, proxy env, and state
+unlimitedcode status       show running daemon status (--json)
+unlimitedcode rotate       rotate active egress IP now (--json)
+unlimitedcode doctor       check environment & connectivity
+unlimitedcode version      print version
 ```
 
-## Configuration
+## Zero Configuration
 
-State directory:
-- **Windows:** `%LOCALAPPDATA%\UnlimitedCode`
-- **Linux/macOS:** `$XDG_STATE_HOME/unlimitedcode` or `~/.local/state/unlimitedcode`
-
-Key settings (`config.json`, see [config.example.json](config.example.json)):
-- `egress.mode`: `masque` (default, embedded WARP MASQUE pool), `http-connect`, or `direct`.
-- `egress.pool_size`: number of warm in-process MASQUE slots (`1`–`8`, default `2`).
-- `egress.passthrough`: forward non-OpenCode hosts directly (default `true`).
-- `rotate.max_per_hour` / `rotate.max_per_day`: rolling rotation budgets (`30` / `300`, `0` disables).
+UnlimitedCode works out of the box with no configuration file needed (built-in
+2-slot IPv6 MASQUE pool on `127.0.0.1:42987`, direct passthrough for all
+non-OpenCode hosts). Advanced overrides can optionally be placed in
+`config.json` inside the state directory (`%LOCALAPPDATA%\UnlimitedCode` on
+Windows, `~/.local/state/unlimitedcode` on Linux/macOS — see
+[config.example.json](config.example.json)).
 
 ## Acknowledgments
 

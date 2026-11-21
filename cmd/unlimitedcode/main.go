@@ -44,30 +44,18 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `UnlimitedCode - local egress proxy & IP rotator for OpenCode
+	fmt.Fprint(os.Stderr, `UnlimitedCode - zero-config egress proxy & IP rotator for OpenCode
 
 usage:
-  unlimitedcode                         interactive menu
-  unlimitedcode install   [--config P]  install plugin & proxy for OpenCode
-  unlimitedcode update    [--yes]       check & install latest GitHub release
-  unlimitedcode uninstall [--keep-state] remove plugin, proxy env, and state
-  unlimitedcode status    [--json]      show running daemon status
-  unlimitedcode rotate    [--json]      rotate active egress IP now
-  unlimitedcode doctor                  check config, ports, egress, and plugin
-  unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control API
-  unlimitedcode version                 print version
-
-daemon flags:
-  --config PATH         config file (default: state home)
-  --listen ADDR         proxy listen address (default 127.0.0.1:42987)
-  --control ADDR        control API address (default 127.0.0.1:42988)
-  --egress MODE         masque | http-connect | direct
-  --upstream URL        http-connect upstream URL
-  --allow HOSTS         comma-separated hosts routed via egress
-  --allow-ports PORTS   comma-separated ports (default 443,80)
-  --max-tunnels N       concurrent tunnel limit
-  --direct-fallback     fall back to direct when egress fails
-  --parent-pid PID      exit cleanly when parent PID terminates
+  unlimitedcode              interactive menu
+  unlimitedcode install      install plugin & proxy for OpenCode
+  unlimitedcode update       check & install latest GitHub release
+  unlimitedcode uninstall    remove plugin, proxy env, and state
+  unlimitedcode status       show running daemon status (--json)
+  unlimitedcode rotate       rotate active egress IP now (--json)
+  unlimitedcode doctor       check environment & connectivity
+  unlimitedcode daemon       run the local daemon (see: daemon --help)
+  unlimitedcode version      print version
 `)
 }
 
