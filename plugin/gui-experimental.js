@@ -65,6 +65,9 @@ async function isDaemonHealthy() {
 
 async function ensureDaemonRunning() {
   if (await isDaemonHealthy()) return true
+  // Give the OpenCode server plugin a brief head start so it owns --parent-pid.
+  await new Promise((r) => setTimeout(r, 300))
+  if (await isDaemonHealthy()) return true
   const bin = installedBinary()
   if (!fs.existsSync(bin)) return false
   try {

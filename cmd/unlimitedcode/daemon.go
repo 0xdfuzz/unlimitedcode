@@ -46,6 +46,11 @@ func cmdDaemon(args []string) {
 		}
 	}()
 
+	// Clean up any leftover .old binary from a live Windows self-update swap.
+	if exe, err := os.Executable(); err == nil {
+		_ = os.Remove(exe + ".old")
+	}
+
 	logger, err := logx.New(config.LogPath(), 2<<20, 2, *parentPID == 0)
 	if err != nil {
 		fatal(fmt.Errorf("open log: %w", err))
@@ -201,12 +206,10 @@ func cmdDaemon(args []string) {
 	}
 
 	errCh := make(chan error, 2)
-	if earlyLn != nil {
-		_ = earlyLn.Close()
-		earlyLn = nil
-	}
+	controlLn := earlyLn
+	earlyLn = nil // ownership transfers to control server (no close/rebind race)
 	go func() { errCh <- p.ListenAndServe() }()
-	go func() { errCh <- c.ListenAndServe() }()
+	go func() { errCh <- c.Serve(controlLn) }()
 
 	select {
 	case <-ctx.Done():

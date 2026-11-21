@@ -543,7 +543,7 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		quicConn *quic.Conn
 		lastErr  error
 	)
-	for _, ep := range c.endpoints {
+	for i, ep := range c.endpoints {
 		netName := "udp4"
 		bindAddr := &net.UDPAddr{IP: net.IPv4zero}
 		if ep.IP.To4() == nil {
@@ -557,7 +557,17 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		}
 		// ConnectionIDLength=20 avoids Cloudflare MASQUE PROTOCOL_VIOLATION disconnects.
 		tr := &quic.Transport{Conn: uc, ConnectionIDLength: 20}
-		qc, err := tr.Dial(ctx, ep, c.tlsConfig, c.quicConfig)
+		epCtx := ctx
+		var epCancel context.CancelFunc
+		// Cap each non-final endpoint so a blackholed IPv4 route on IPv6-only
+		// mobile data still leaves time to try the IPv6 endpoint in the same dial.
+		if i < len(c.endpoints)-1 {
+			epCtx, epCancel = context.WithTimeout(ctx, 3*time.Second)
+		}
+		qc, err := tr.Dial(epCtx, ep, c.tlsConfig, c.quicConfig)
+		if epCancel != nil {
+			epCancel()
+		}
 		if err != nil {
 			_ = tr.Close()
 			_ = uc.Close()

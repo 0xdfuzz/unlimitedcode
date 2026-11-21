@@ -94,6 +94,10 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
+	return s.Serve(ln)
+}
+
+func (s *Server) Serve(ln net.Listener) error {
 	s.ln = ln
 	s.srv = &http.Server{
 		Handler:           s.Handler(),
@@ -102,7 +106,7 @@ func (s *Server) ListenAndServe() error {
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 	s.logger.Printf("control listening on %s", ln.Addr())
-	err = s.srv.Serve(ln)
+	err := s.srv.Serve(ln)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
