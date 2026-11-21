@@ -7,7 +7,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const ROTATE_TIMEOUT_MS = 55_000
 const RELEASES_URL = "https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest"
-const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000
+const UPDATE_CHECK_TTL_MS = 2 * 60 * 60 * 1000
 
 const WINDOWS = ["24h", "7d", "30d", "All"] as const
 type WindowKey = (typeof WINDOWS)[number]

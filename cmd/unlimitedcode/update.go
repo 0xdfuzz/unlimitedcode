@@ -56,12 +56,29 @@ func cmdUpdate(args []string) {
 		}
 	}
 
+	if err := applyReleaseUpdate(rel, cachePath); err != nil {
+		fatal(err)
+	}
+}
+
+func checkUpdateQuick() *update.Release {
+	ctx, cancel := context.WithTimeout(context.Background(), 3500*time.Millisecond)
+	defer cancel()
+	rel, err := update.Check(ctx, version)
+	if err != nil {
+		return nil
+	}
+	update.WriteCache(filepath.Join(config.Home(), "update_check.json"), rel)
+	return rel
+}
+
+func applyReleaseUpdate(rel *update.Release, cachePath string) error {
 	fmt.Printf("Downloading %s...\n", rel.AssetName)
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	tmpBin, err := update.DownloadAndVerify(dlCtx, rel, config.Home())
 	dlCancel()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	defer os.Remove(tmpBin)
 
@@ -73,7 +90,7 @@ func cmdUpdate(args []string) {
 
 	dest := setup.InstalledPath()
 	if err := setup.CopyBinary(tmpBin, dest); err != nil {
-		fatal(fmt.Errorf("install updated binary: %w", err))
+		return fmt.Errorf("install updated binary: %w", err)
 	}
 
 	// Run the newly installed binary's install step so the embedded OpenCode
@@ -82,9 +99,13 @@ func cmdUpdate(args []string) {
 	installCmd.Stdout = os.Stdout
 	installCmd.Stderr = os.Stderr
 	if err := installCmd.Run(); err != nil {
-		fatal(fmt.Errorf("refresh plugin after update: %w", err))
+		return fmt.Errorf("refresh plugin after update: %w", err)
 	}
 
+	if cachePath == "" {
+		cachePath = filepath.Join(config.Home(), "update_check.json")
+	}
 	update.WriteCache(cachePath, nil)
 	fmt.Printf("\nUpdated to %s! Restart OpenCode to load the new plugin.\n", rel.Tag)
+	return nil
 }

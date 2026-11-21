@@ -31,70 +31,129 @@ func cmdInstall(args []string, interactive bool) {
 	addConfigFlag(fs, o)
 	fs.Parse(args)
 
-	if interactive {
-		if isAlreadyInstalled() {
-			fmt.Printf("UnlimitedCode v%s (installed)\n\n", version)
-			fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
-			fmt.Println("  [2] Check for updates")
-			fmt.Println("  [3] Status & Diagnostics")
-			fmt.Println("  [4] Uninstall (remove everything)")
-			fmt.Println("  [0] Exit")
-			fmt.Print("\nChoose [1/2/3/4/0]: ")
-			choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			fmt.Println()
-			switch strings.TrimSpace(choice) {
-			case "1":
-				// continue into install/repair below
-			case "2":
-				cmdUpdate(nil)
-				pauseIfWindows()
-				return
-			case "3":
-				cmdDoctor(nil)
-				fmt.Println()
-				cfg, err := config.Load("")
-				if err != nil {
-					cfg = config.Default()
-				}
-				if setup.Health(cfg.Control) {
-					cmdStatus(nil)
-				}
-				pauseIfWindows()
-				return
-			case "4":
-				cmdUninstall(nil)
-				pauseIfWindows()
-				return
-			default:
-				return
-			}
-		} else {
-			fmt.Printf("UnlimitedCode v%s\n\n", version)
-			fmt.Println("  [1] Install (plugin + proxy for OpenCode)")
-			fmt.Println("  [2] Diagnostics (check environment)")
-			fmt.Println("  [0] Exit")
-			fmt.Print("\nChoose [1/2/0]: ")
-			choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			fmt.Println()
-			switch strings.TrimSpace(choice) {
-			case "1":
-				// continue into install below
-			case "2":
-				cmdDoctor(nil)
-				pauseIfWindows()
-				return
-			default:
-				return
-			}
-		}
-	}
-
 	fail := func(err error) {
 		fmt.Fprintf(os.Stderr, "unlimitedcode: %v\n", err)
 		if interactive {
 			pauseIfWindows()
 		}
 		os.Exit(1)
+	}
+
+	if interactive {
+		avail := checkUpdateQuick()
+		if isAlreadyInstalled() {
+			fmt.Printf("UnlimitedCode v%s (installed)\n", version)
+			if avail != nil {
+				fmt.Printf("Update available: %s\n\n", avail.Tag)
+				fmt.Printf("  [1] Update to %s\n", avail.Tag)
+				fmt.Println("  [2] Repair / Reinstall (current binary)")
+				fmt.Println("  [3] Status & Diagnostics")
+				fmt.Println("  [4] Uninstall (remove everything)")
+				fmt.Println("  [0] Exit")
+				fmt.Print("\nChoose [1/2/3/4/0]: ")
+				choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				fmt.Println()
+				switch strings.TrimSpace(choice) {
+				case "1":
+					if err := applyReleaseUpdate(avail, ""); err != nil {
+						fail(err)
+					}
+					pauseIfWindows()
+					return
+				case "2":
+					// continue into install/repair below
+				case "3":
+					showInteractiveDiagnostics()
+					pauseIfWindows()
+					return
+				case "4":
+					cmdUninstall(nil)
+					pauseIfWindows()
+					return
+				default:
+					return
+				}
+			} else {
+				fmt.Println()
+				fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
+				fmt.Println("  [2] Check for updates")
+				fmt.Println("  [3] Status & Diagnostics")
+				fmt.Println("  [4] Uninstall (remove everything)")
+				fmt.Println("  [0] Exit")
+				fmt.Print("\nChoose [1/2/3/4/0]: ")
+				choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				fmt.Println()
+				switch strings.TrimSpace(choice) {
+				case "1":
+					// continue into install/repair below
+				case "2":
+					cmdUpdate(nil)
+					pauseIfWindows()
+					return
+				case "3":
+					showInteractiveDiagnostics()
+					pauseIfWindows()
+					return
+				case "4":
+					cmdUninstall(nil)
+					pauseIfWindows()
+					return
+				default:
+					return
+				}
+			}
+		} else {
+			fmt.Printf("UnlimitedCode v%s\n", version)
+			if avail != nil {
+				fmt.Printf("Update available: %s\n\n", avail.Tag)
+				fmt.Printf("  [1] Update to %s & Install (recommended)\n", avail.Tag)
+				fmt.Printf("  [2] Install this version (v%s)\n", version)
+				fmt.Println("  [3] Diagnostics (check environment)")
+				fmt.Println("  [0] Exit")
+				fmt.Print("\nChoose [1/2/3/0]: ")
+				choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				fmt.Println()
+				switch strings.TrimSpace(choice) {
+				case "1":
+					if err := applyReleaseUpdate(avail, ""); err != nil {
+						fail(err)
+					}
+					pauseIfWindows()
+					return
+				case "2":
+					// continue into install below
+				case "3":
+					cmdDoctor(nil)
+					pauseIfWindows()
+					return
+				default:
+					return
+				}
+			} else {
+				fmt.Println()
+				fmt.Println("  [1] Install (plugin + proxy for OpenCode)")
+				fmt.Println("  [2] Check for updates")
+				fmt.Println("  [3] Diagnostics (check environment)")
+				fmt.Println("  [0] Exit")
+				fmt.Print("\nChoose [1/2/3/0]: ")
+				choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				fmt.Println()
+				switch strings.TrimSpace(choice) {
+				case "1":
+					// continue into install below
+				case "2":
+					cmdUpdate(nil)
+					pauseIfWindows()
+					return
+				case "3":
+					cmdDoctor(nil)
+					pauseIfWindows()
+					return
+				default:
+					return
+				}
+			}
+		}
 	}
 
 	cfg, err := o.load(fs)
@@ -145,6 +204,18 @@ func cmdInstall(args []string, interactive bool) {
 	fmt.Println("Inside OpenCode, try: /unlimited · /unlimited-stats · /rotate")
 	if interactive {
 		pauseIfWindows()
+	}
+}
+
+func showInteractiveDiagnostics() {
+	cmdDoctor(nil)
+	fmt.Println()
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = config.Default()
+	}
+	if setup.Health(cfg.Control) {
+		cmdStatus(nil)
 	}
 }
 
