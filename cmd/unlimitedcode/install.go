@@ -143,11 +143,10 @@ func cmdInstall(args []string, interactive bool) {
 		fmt.Printf("autostart %s\n", vbs)
 	}
 
-	// Restart OpenCode background service if reachable so the new plugin & proxy apply immediately.
-	if official != "" {
-		if err := exec.CommandContext(context.Background(), official, "service", "restart").Run(); err == nil {
-			fmt.Println("opencode  service restarted")
-		}
+	// Restart every discovered OpenCode background service (CLI + Desktop sidecar)
+	// so the updated plugin and proxy env apply immediately.
+	if restartOpenCodeServices() {
+		fmt.Println("opencode  service restarted")
 	}
 
 	fmt.Println()
@@ -201,11 +200,13 @@ func cmdUninstall(args []string) {
 	}
 
 	_, _ = setup.ClearOpenCodeServiceEnv()
-	if official, err := opencode.Find(); err == nil {
+	for _, bin := range opencode.FindAll() {
 		for _, key := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"} {
-			_ = exec.Command(official, "service", "unset", "env", key).Run()
+			_ = exec.Command(bin, "service", "unset", "env", key).Run()
 		}
-		_ = exec.Command(official, "service", "restart").Run()
+	}
+	if restartOpenCodeServices() {
+		fmt.Println("opencode  service restarted")
 	}
 	fmt.Println("proxy     cleared from OpenCode service env")
 
@@ -219,6 +220,19 @@ func cmdUninstall(args []string) {
 	}
 
 	fmt.Println("UnlimitedCode uninstalled.")
+}
+
+func restartOpenCodeServices() bool {
+	restarted := false
+	for _, bin := range opencode.FindAll() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		err := exec.CommandContext(ctx, bin, "service", "restart").Run()
+		cancel()
+		if err == nil {
+			restarted = true
+		}
+	}
+	return restarted
 }
 
 func stopRunningDaemon(controlAddr string) bool {

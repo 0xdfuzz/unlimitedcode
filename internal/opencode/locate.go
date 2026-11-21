@@ -84,25 +84,45 @@ func candidates() []string {
 }
 
 func Find() (string, error) {
-	for _, candidate := range candidates() {
+	all := FindAll()
+	if len(all) > 0 {
+		return all[0], nil
+	}
+	return "", errors.New("official opencode binary not found")
+}
+
+// FindAll returns every distinct official opencode binary found across known
+// CLI and Desktop locations and PATH (excluding shims).
+func FindAll() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(candidate string) {
 		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() && !IsShim(candidate) {
-			return candidate, nil
+		if err != nil || info.IsDir() || IsShim(candidate) {
+			return
 		}
+		key := candidate
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(filepath.Clean(candidate))
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, candidate)
+	}
+	for _, candidate := range candidates() {
+		add(candidate)
 	}
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if dir == "" {
 			continue
 		}
 		for _, name := range Names() {
-			candidate := filepath.Join(dir, name)
-			info, err := os.Stat(candidate)
-			if err == nil && !info.IsDir() && !IsShim(candidate) {
-				return candidate, nil
-			}
+			add(filepath.Join(dir, name))
 		}
 	}
-	return "", errors.New("official opencode binary not found")
+	return out
 }
 
 // Shims returns every opencode launcher visible on PATH, including shims.
