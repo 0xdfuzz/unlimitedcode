@@ -13,7 +13,7 @@ func watchParent(ctx context.Context, pid int, cancel context.CancelFunc) {
 	if pid <= 0 {
 		return
 	}
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {

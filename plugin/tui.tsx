@@ -46,6 +46,11 @@ function stateHome(): string {
   return join(homedir(), ".local", "state", "unlimitedcode")
 }
 
+let cachedControlURL = ""
+let cachedControlToken = ""
+let memUpdateTag = ""
+let memUpdateCheckedAt = 0
+
 function readConfigJSON(): any {
   try {
     return JSON.parse(readFileSync(join(stateHome(), "config.json"), "utf8"))
@@ -55,16 +60,20 @@ function readConfigJSON(): any {
 }
 
 function controlURL(): string {
+  if (cachedControlURL) return cachedControlURL
   const raw = process.env.UNLIMITEDCODE_CONTROL || readConfigJSON()?.control || DEFAULT_CONTROL
-  return raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
+  cachedControlURL = raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
+  return cachedControlURL
 }
 
-function controlToken(): string {
+function controlToken(forceReload = false): string {
+  if (!forceReload && cachedControlToken) return cachedControlToken
   try {
-    return readFileSync(join(stateHome(), "control.token"), "utf8").trim()
+    cachedControlToken = readFileSync(join(stateHome(), "control.token"), "utf8").trim()
   } catch {
-    return ""
+    cachedControlToken = ""
   }
+  return cachedControlToken
 }
 
 function installedBinary(): string {
@@ -113,7 +122,7 @@ async function controlCall(path: string, method = "GET", body?: any, timeoutMs =
   let token = controlToken()
   if (!token) {
     if (await ensureDaemonRunning()) {
-      token = controlToken()
+      token = controlToken(true)
     }
     if (!token) return null
   }
@@ -129,6 +138,10 @@ async function controlCall(path: string, method = "GET", body?: any, timeoutMs =
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     })
+    if (res.status === 401) {
+      cachedControlToken = ""
+      return null
+    }
     if (!res.ok) return null
     return await res.json().catch(() => null)
   } catch {
@@ -402,13 +415,18 @@ function isNewerVersion(current: string, candidate: string): boolean {
 
 async function checkAvailableUpdate(currentVersion: string): Promise<string> {
   if (!currentVersion) return ""
-  const cachePath = join(stateHome(), "update_check.json")
   const now = Date.now()
+  if (memUpdateCheckedAt > 0 && now - memUpdateCheckedAt < UPDATE_CHECK_TTL_MS) {
+    return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
+  }
+  const cachePath = join(stateHome(), "update_check.json")
   try {
     const cached = JSON.parse(readFileSync(cachePath, "utf8"))
-    if (cached && now - Number(cached.checked_at || 0) < UPDATE_CHECK_TTL_MS) {
-      const tag = String(cached.tag || "")
-      return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+    const checkedAt = Number(cached?.checked_at || 0)
+    if (checkedAt > 0 && now - checkedAt < UPDATE_CHECK_TTL_MS) {
+      memUpdateCheckedAt = checkedAt
+      memUpdateTag = String(cached.tag || "")
+      return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
     }
   } catch {}
   try {
@@ -420,6 +438,8 @@ async function checkAvailableUpdate(currentVersion: string): Promise<string> {
     const data: any = await res.json().catch(() => null)
     const tag = String(data?.tag_name || "").trim()
     const version = tag.replace(/^v/i, "")
+    memUpdateCheckedAt = now
+    memUpdateTag = tag
     try {
       writeFileSync(
         cachePath,
@@ -468,6 +488,8 @@ async function doApplyUpdate(context: any, tag: string): Promise<void> {
     }
   })
   if (ok) {
+    memUpdateCheckedAt = 0
+    memUpdateTag = ""
     await ensureDaemonRunning()
     context.ui.toast.show({
       title: "UnlimitedCode",
@@ -927,7 +949,7 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
     })()
     const timer = setInterval(() => {
       void refresh()
-    }, 15_000)
+    }, 60_000)
     onCleanup(() => clearInterval(timer))
   })
 

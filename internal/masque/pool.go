@@ -628,7 +628,7 @@ func lookupAAAA(ctx context.Context, host string) string {
 	}
 	client := &http.Client{
 		Timeout:   2 * time.Second,
-		Transport: &http.Transport{Proxy: nil},
+		Transport: directTransport,
 	}
 	for _, dohURL := range dohEndpoints {
 		req, err := http.NewRequestWithContext(rctx, http.MethodGet, dohURL, nil)

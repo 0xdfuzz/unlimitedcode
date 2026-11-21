@@ -6,12 +6,17 @@ const os = require("node:os")
 const path = require("node:path")
 const { Schema } = require("effect")
 const sdk = require("@opencode/plugin/gui")
-const { createSignal, onCleanup, onMount } = require("solid-js")
+const { createEffect, createSignal, onCleanup, onMount } = require("solid-js")
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const WINDOWS = ["24h", "7d", "30d", "All"]
 const RELEASES_URL = "https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest"
 const UPDATE_CHECK_TTL_MS = 2 * 60 * 60 * 1000
+
+let cachedControlURL = ""
+let cachedControlToken = ""
+let memUpdateTag = ""
+let memUpdateCheckedAt = 0
 
 function stateHome() {
   if (process.env.UNLIMITEDCODE_HOME) return process.env.UNLIMITEDCODE_HOME
@@ -31,16 +36,20 @@ function readConfigJSON() {
 }
 
 function controlURL() {
+  if (cachedControlURL) return cachedControlURL
   const raw = process.env.UNLIMITEDCODE_CONTROL || readConfigJSON()?.control || DEFAULT_CONTROL
-  return raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
+  cachedControlURL = raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
+  return cachedControlURL
 }
 
-function controlToken() {
+function controlToken(forceReload = false) {
+  if (!forceReload && cachedControlToken) return cachedControlToken
   try {
-    return fs.readFileSync(path.join(stateHome(), "control.token"), "utf8").trim()
+    cachedControlToken = fs.readFileSync(path.join(stateHome(), "control.token"), "utf8").trim()
   } catch {
-    return ""
+    cachedControlToken = ""
   }
+  return cachedControlToken
 }
 
 function installedBinary() {
@@ -305,6 +314,10 @@ async function controlCall(endpoint, method = "GET", body, timeoutMs = 8000) {
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     })
+    if (res.status === 401) {
+      cachedControlToken = ""
+      return null
+    }
     if (!res.ok) return null
     return await res.json().catch(() => null)
   } catch {
@@ -335,13 +348,18 @@ function isNewerVersion(current, candidate) {
 
 async function checkAvailableUpdate(currentVersion) {
   if (!currentVersion) return ""
-  const cachePath = path.join(stateHome(), "update_check.json")
   const now = Date.now()
+  if (memUpdateCheckedAt > 0 && now - memUpdateCheckedAt < UPDATE_CHECK_TTL_MS) {
+    return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
+  }
+  const cachePath = path.join(stateHome(), "update_check.json")
   try {
     const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"))
-    if (cached && now - Number(cached.checked_at || 0) < UPDATE_CHECK_TTL_MS) {
-      const tag = String(cached.tag || "")
-      return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+    const checkedAt = Number(cached?.checked_at || 0)
+    if (checkedAt > 0 && now - checkedAt < UPDATE_CHECK_TTL_MS) {
+      memUpdateCheckedAt = checkedAt
+      memUpdateTag = String(cached.tag || "")
+      return memUpdateTag && isNewerVersion(currentVersion, memUpdateTag) ? memUpdateTag : ""
     }
   } catch {}
   try {
@@ -353,6 +371,8 @@ async function checkAvailableUpdate(currentVersion) {
     const data = await res.json().catch(() => null)
     const tag = String(data?.tag_name || "").trim()
     const version = tag.replace(/^v/i, "")
+    memUpdateCheckedAt = now
+    memUpdateTag = tag
     try {
       fs.writeFileSync(
         cachePath,
@@ -389,6 +409,8 @@ async function runUpdateBinary() {
     }
   })
   if (ok) {
+    memUpdateCheckedAt = 0
+    memUpdateTag = ""
     await ensureDaemonRunning()
     return { ok: true, message: "Updated! Restart OpenCode to reload the plugin." }
   }
@@ -895,7 +917,7 @@ exports.default = sdk.Plugin.define({
       void refresh()
       const timer = setInterval(() => {
         void refresh()
-      }, 15000)
+      }, 60000)
       onCleanup(() => clearInterval(timer))
     })
 
@@ -1014,9 +1036,7 @@ exports.default = sdk.Plugin.define({
           void openStatsDialog()
         }
 
-        paint()
-        const sync = setInterval(paint, 3000)
-        onCleanup(() => clearInterval(sync))
+        createEffect(paint)
         return btn
       },
     })

@@ -235,6 +235,12 @@ func enrollNewKey(ctx context.Context, prev slotConfig) (slotConfig, error) {
 	}, nil
 }
 
+var directTransport = &http.Transport{
+	Proxy:           nil,
+	MaxIdleConns:    4,
+	IdleConnTimeout: 30 * time.Second,
+}
+
 func cfRequest(ctx context.Context, method, rawURL, token string, payload any, out any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -252,7 +258,7 @@ func cfRequest(ctx context.Context, method, rawURL, token string, payload any, o
 	}
 	client := &http.Client{
 		Timeout:   15 * time.Second,
-		Transport: &http.Transport{Proxy: nil},
+		Transport: directTransport,
 	}
 	resp, err := client.Do(req)
 	if err != nil {

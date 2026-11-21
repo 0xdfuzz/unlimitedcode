@@ -98,6 +98,9 @@ function installedBinary(): string {
   return join(stateHome(), name)
 }
 
+let cachedControlURL = ""
+let cachedControlToken = ""
+
 function readConfigJSON(): any {
   try {
     return JSON.parse(readFileSync(join(stateHome(), "config.json"), "utf8"))
@@ -107,16 +110,20 @@ function readConfigJSON(): any {
 }
 
 function controlURL(): string {
+  if (cachedControlURL) return cachedControlURL
   const raw = process.env.UNLIMITEDCODE_CONTROL || readConfigJSON()?.control || DEFAULT_CONTROL
-  return raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
+  cachedControlURL = raw.startsWith("http") ? raw.replace(/\/+$/, "") : `http://${raw}`
+  return cachedControlURL
 }
 
-function controlToken(): string {
+function controlToken(forceReload = false): string {
+  if (!forceReload && cachedControlToken) return cachedControlToken
   try {
-    return readFileSync(join(stateHome(), "control.token"), "utf8").trim()
+    cachedControlToken = readFileSync(join(stateHome(), "control.token"), "utf8").trim()
   } catch {
-    return ""
+    cachedControlToken = ""
   }
+  return cachedControlToken
 }
 
 async function isDaemonHealthy(): Promise<boolean> {
@@ -160,7 +167,7 @@ async function ensureDaemonRunning(): Promise<boolean> {
 
 async function syncDaemonState(force = false): Promise<any | null> {
   const now = Date.now()
-  if (!force && now - lastSyncAt < 3_000) return null
+  if (!force && now - lastSyncAt < 10_000) return null
   lastSyncAt = now
   const st = await controlCall("/status", "GET", undefined, 1_500)
   if (!st) return null
@@ -195,6 +202,10 @@ async function controlCall(path: string, method = "GET", body?: any, timeoutMs =
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     })
+    if (res.status === 401) {
+      cachedControlToken = ""
+      return null
+    }
     if (!res.ok) return null
     return await res.json().catch(() => null)
   } catch {
