@@ -298,13 +298,19 @@ async function setup(ctx: any): Promise<void> {
 
     const isFreeLimit =
       errType === "provider.free-limit" ||
-      (isOpenCodeProvider(event) && (status === 429 || /free.?limit|today's free messages/i.test(errMsg)))
+      (isOpenCodeProvider(event) &&
+        (status === 429 || /FreeUsageLimitError|free.?usage.?limit|free.?limit|today's free messages/i.test(errMsg)))
 
     if (!isFreeLimit) {
       // Self-heal proxy/tunnel failures (e.g. daemon stopped or MASQUE edge glitch)
       // invisibly without breaking the active chat. Bounded to 3 attempts so offline
       // networks fail fast instead of looping.
-      if (attempt <= 3 && /ECONNREFUSED|Unable to connect|ERR_PROXY_TUNNEL|502 Bad Gateway|ECONNRESET|socket connection was closed/i.test(errMsg)) {
+      const isTransport =
+        errType === "provider.transport" ||
+        /ECONNREFUSED|Unable to connect|ERR_PROXY_TUNNEL|502 Bad Gateway|ECONNRESET|socket connection was closed/i.test(
+          errMsg,
+        )
+      if (attempt <= 3 && isTransport) {
         const wasUp = await isDaemonHealthy()
         const up = wasUp || (await ensureDaemonRunning())
         if (up) {

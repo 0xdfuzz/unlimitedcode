@@ -63,9 +63,9 @@ type Server struct {
 	tunnels   map[net.Conn]struct{}
 	lastEvent string
 
-	gateMu   sync.Mutex
-	gateOpen bool
-	gateCh   chan struct{}
+	gateMu     sync.Mutex
+	pauseDepth int
+	gateCh     chan struct{}
 }
 
 func New(opts Options) (*Server, error) {
@@ -92,13 +92,12 @@ func New(opts Options) (*Server, error) {
 		logger = log.New(io.Discard, "", 0)
 	}
 	return &Server{
-		opts:     opts,
-		logger:   logger,
-		sem:      make(chan struct{}, opts.MaxTunnels),
-		started:  time.Now(),
-		tunnels:  make(map[net.Conn]struct{}),
-		gateOpen: true,
-		gateCh:   make(chan struct{}),
+		opts:    opts,
+		logger:  logger,
+		sem:     make(chan struct{}, opts.MaxTunnels),
+		started: time.Now(),
+		tunnels: make(map[net.Conn]struct{}),
+		gateCh:  make(chan struct{}),
 	}, nil
 }
 
@@ -142,29 +141,31 @@ func (s *Server) Close(ctx context.Context) error {
 	return err
 }
 
-// Pause stops new tunnels from dialing until Resume. Existing tunnels keep
-// running until CloseTunnels is called.
+// Pause stops new routed tunnels from dialing until a matching Resume call.
+// Refcounted so boot-time gating and rotations compose safely.
 func (s *Server) Pause() {
 	s.gateMu.Lock()
-	if s.gateOpen {
-		s.gateOpen = false
+	if s.pauseDepth == 0 {
 		s.gateCh = make(chan struct{})
 	}
+	s.pauseDepth++
 	s.gateMu.Unlock()
 }
 
 func (s *Server) Resume() {
 	s.gateMu.Lock()
-	if !s.gateOpen {
-		s.gateOpen = true
-		close(s.gateCh)
+	if s.pauseDepth > 0 {
+		s.pauseDepth--
+		if s.pauseDepth == 0 {
+			close(s.gateCh)
+		}
 	}
 	s.gateMu.Unlock()
 }
 
 func (s *Server) waitGate(ctx context.Context) error {
 	s.gateMu.Lock()
-	if s.gateOpen {
+	if s.pauseDepth == 0 {
 		s.gateMu.Unlock()
 		return nil
 	}

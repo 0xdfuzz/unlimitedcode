@@ -89,13 +89,6 @@ func cmdDaemon(args []string) {
 			logger.Printf("fatal: %v", err)
 			fatal(err)
 		}
-		bootCtx, bootCancel := context.WithTimeout(ctx, 45*time.Second)
-		err = pool.Start(bootCtx)
-		bootCancel()
-		if err != nil {
-			logger.Printf("fatal: %v", err)
-			fatal(err)
-		}
 		defer pool.Close()
 		masquePool = pool
 		dialer = pool
@@ -205,7 +198,25 @@ func cmdDaemon(args []string) {
 		fatal(err)
 	}
 
-	errCh := make(chan error, 2)
+	// Open the proxy and control ports immediately so OpenCode never hits
+	// ECONNREFUSED during MASQUE boot: routed hosts wait smoothly at the
+	// proxy gate until the first slot is ready, while passthrough hosts go
+	// straight through with zero delay.
+	errCh := make(chan error, 3)
+	if masquePool != nil {
+		p.Pause()
+		go func() {
+			bootCtx, bootCancel := context.WithTimeout(ctx, 45*time.Second)
+			err := masquePool.Start(bootCtx)
+			bootCancel()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			p.Resume()
+		}()
+	}
+
 	controlLn := earlyLn
 	earlyLn = nil // ownership transfers to control server (no close/rebind race)
 	go func() { errCh <- p.ListenAndServe() }()
