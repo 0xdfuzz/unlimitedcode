@@ -378,6 +378,8 @@ func (p *Pool) Reconnect(ctx context.Context) error {
 			p.scheduleRecover(old)
 			return nil
 		}
+		p.scheduleRecover(old)
+		p.healFailedSlots()
 		return err
 	}
 	p.healFailedSlots()
@@ -595,6 +597,11 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 		if err != nil {
 			lastErr = err
 			p.log.Printf("masque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
+			if isRateLimitErr(err) {
+				// Stop immediately on Cloudflare 429/1015 so we don't extend the
+				// rate-limit window; background recovery will retry with backoff.
+				break
+			}
 			if attempt < maxRecycleTries {
 				select {
 				case <-ctx.Done():

@@ -121,9 +121,14 @@ type cfAccountResp struct {
 }
 
 var (
-	regMu     sync.Mutex
-	lastRegAt time.Time
+	regMu                  sync.Mutex
+	lastRegAt              time.Time
+	errCloudflareRateLimit = errors.New("cloudflare API 429")
 )
+
+func isRateLimitErr(err error) bool {
+	return errors.Is(err, errCloudflareRateLimit)
+}
 
 // registerAndEnroll creates a new Cloudflare WARP device and immediately
 // enrolls a fresh P-256 MASQUE keypair. Serialized across slots so parallel
@@ -155,6 +160,9 @@ func registerAndEnroll(ctx context.Context) (slotConfig, error) {
 			return cfg, nil
 		}
 		lastErr = err
+		if isRateLimitErr(err) {
+			break
+		}
 	}
 	return slotConfig{}, lastErr
 }
@@ -358,6 +366,9 @@ func cfRequest(ctx context.Context, method, rawURL, token string, payload any, o
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("%w: %s", errCloudflareRateLimit, strings.TrimSpace(string(respBody)))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("cloudflare API %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
