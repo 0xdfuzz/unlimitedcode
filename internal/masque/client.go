@@ -18,6 +18,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -235,10 +237,97 @@ func enrollNewKey(ctx context.Context, prev slotConfig) (slotConfig, error) {
 	}, nil
 }
 
+var directDialer = &net.Dialer{
+	Timeout:   10 * time.Second,
+	KeepAlive: 30 * time.Second,
+}
+
+// dohIPTransport is used exclusively to reach IP-literal DoH endpoints
+// (1.1.1.1 / 8.8.8.8) when the OS DNS resolver blips, avoiding any recursion.
+var dohIPTransport = &http.Transport{
+	Proxy:           nil,
+	DialContext:     directDialer.DialContext,
+	MaxIdleConns:    2,
+	IdleConnTimeout: 30 * time.Second,
+}
+
 var directTransport = &http.Transport{
 	Proxy:           nil,
+	DialContext:     dialWithDoHFallback,
 	MaxIdleConns:    4,
 	IdleConnTimeout: 30 * time.Second,
+}
+
+func dialWithDoHFallback(ctx context.Context, network, addr string) (net.Conn, error) {
+	conn, err := directDialer.DialContext(ctx, network, addr)
+	if err == nil {
+		return conn, nil
+	}
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return nil, err
+	}
+	host, port, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		return nil, err
+	}
+	if _, parseErr := netip.ParseAddr(host); parseErr == nil {
+		return nil, err
+	}
+	if ip := lookupViaDoHIP(ctx, host); ip != "" {
+		return directDialer.DialContext(ctx, network, net.JoinHostPort(ip, port))
+	}
+	return nil, err
+}
+
+func lookupViaDoHIP(ctx context.Context, host string) string {
+	rctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	defer cancel()
+	client := &http.Client{
+		Timeout:   2500 * time.Millisecond,
+		Transport: dohIPTransport,
+	}
+	queries := []struct {
+		url      string
+		wantType int
+	}{
+		{"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=A", 1},
+		{"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=AAAA", 28},
+	}
+	for _, q := range queries {
+		req, err := http.NewRequestWithContext(rctx, http.MethodGet, q.url, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Accept", "application/dns-json")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+		var payload struct {
+			Answer []struct {
+				Type int    `json:"type"`
+				Data string `json:"data"`
+			} `json:"Answer"`
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&payload)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		for _, ans := range payload.Answer {
+			if ans.Type == q.wantType {
+				if parsed, err := netip.ParseAddr(strings.TrimSpace(ans.Data)); err == nil {
+					return parsed.String()
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func cfRequest(ctx context.Context, method, rawURL, token string, payload any, out any) error {

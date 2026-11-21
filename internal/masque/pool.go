@@ -33,6 +33,16 @@ const (
 	maxBurntEntries = 200
 )
 
+// recoverBackoffs controls the exponential backoff schedule used to revive a
+// failed spare slot after a transient network/DNS outage. Overridable in tests.
+var recoverBackoffs = []time.Duration{
+	10 * time.Second,
+	30 * time.Second,
+	60 * time.Second,
+	2 * time.Minute,
+	5 * time.Minute,
+}
+
 type Logger interface {
 	Printf(format string, args ...any)
 }
@@ -67,15 +77,16 @@ type slot struct {
 	id         int
 	configPath string
 
-	mu       sync.Mutex
-	cfg      slotConfig
-	client   *l4Client
-	state    string
-	ip       string
-	prefix   string
-	colo     string
-	lastErr  string
-	recycles int64
+	mu         sync.Mutex
+	cfg        slotConfig
+	client     *l4Client
+	state      string
+	ip         string
+	prefix     string
+	colo       string
+	lastErr    string
+	recycles   int64
+	recovering bool
 }
 
 type aaaaEntry struct {
@@ -85,10 +96,11 @@ type aaaaEntry struct {
 }
 
 type Pool struct {
-	stateDir string
-	size     int
-	timeout  time.Duration
-	log      Logger
+	stateDir  string
+	size      int
+	timeout   time.Duration
+	log       Logger
+	recycleFn func(ctx context.Context, s *slot, avoidPrefix string) error
 
 	mu        sync.Mutex
 	slots     []*slot
@@ -182,6 +194,7 @@ func (p *Pool) Start(ctx context.Context) error {
 				errMu.Lock()
 				bootErrs = append(bootErrs, fmt.Sprintf("slot %d: %v", sl.id, err))
 				errMu.Unlock()
+				p.scheduleRecover(sl)
 				return
 			}
 
@@ -210,7 +223,10 @@ func (p *Pool) Start(ctx context.Context) error {
 				p.log.Printf("masque slot=%d shares prefix %s with active slot=%d; recycling in background", sl.id, activePrefix, active.id)
 				bgCtx, bgCancel := context.WithTimeout(p.ctx, 45*time.Second)
 				defer bgCancel()
-				_ = p.recycleSlot(bgCtx, sl, activePrefix)
+				if err := p.recycleSlot(bgCtx, sl, activePrefix); err != nil {
+					p.log.Printf("masque slot=%d dedup recycle failed: %v", sl.id, err)
+					p.scheduleRecover(sl)
+				}
 			}
 		}(s)
 	}
@@ -259,6 +275,7 @@ func (p *Pool) Close() {
 	}
 	p.wg.Wait()
 	directTransport.CloseIdleConnections()
+	dohIPTransport.CloseIdleConnections()
 }
 
 // Name implements upstream.Dialer.
@@ -334,29 +351,120 @@ func (p *Pool) Reconnect(ctx context.Context) error {
 		p.log.Printf("masque fast-rotate slot=%d (%s) -> slot=%d (%s); recycling slot=%d in background",
 			old.id, oldIP, next.id, nextIP, old.id)
 
-		p.wg.Add(1)
-		go func() {
-			defer p.wg.Done()
-			bgCtx, cancel := context.WithTimeout(p.ctx, 45*time.Second)
-			defer cancel()
-			if err := p.recycleSlot(bgCtx, old, oldPrefix); err != nil {
-				p.log.Printf("masque bg recycle slot=%d failed: %v", old.id, err)
-			}
-		}()
+		p.mu.Lock()
+		if !p.closed {
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				bgCtx, cancel := context.WithTimeout(p.ctx, 45*time.Second)
+				defer cancel()
+				if err := p.doRecycle(bgCtx, old, oldPrefix); err != nil {
+					p.log.Printf("masque bg recycle slot=%d failed: %v", old.id, err)
+					p.scheduleRecover(old)
+				}
+			}()
+		}
+		p.mu.Unlock()
+		p.healFailedSlots()
 		return nil
 	}
 
 	p.log.Printf("masque sync-rotate recycling slot=%d (%s)", old.id, oldIP)
-	if err := p.recycleSlot(ctx, old, oldPrefix); err != nil {
+	if err := p.doRecycle(ctx, old, oldPrefix); err != nil {
 		if alt := p.pickOtherReady(old.id); alt != nil {
 			p.mu.Lock()
 			p.active = alt.id
 			p.mu.Unlock()
+			p.scheduleRecover(old)
 			return nil
 		}
 		return err
 	}
+	p.healFailedSlots()
 	return nil
+}
+
+func (p *Pool) doRecycle(ctx context.Context, s *slot, avoidPrefix string) error {
+	if p.recycleFn != nil {
+		return p.recycleFn(ctx, s, avoidPrefix)
+	}
+	return p.recycleSlot(ctx, s, avoidPrefix)
+}
+
+// healFailedSlots schedules background recovery for any spare slot stuck in
+// "failed" state (e.g. after a transient network/DNS outage).
+func (p *Pool) healFailedSlots() {
+	activeID := p.activeSlot().id
+	for _, s := range p.slots {
+		if s.id == activeID {
+			continue
+		}
+		s.mu.Lock()
+		failed := s.state == "failed"
+		s.mu.Unlock()
+		if failed {
+			p.scheduleRecover(s)
+		}
+	}
+}
+
+// scheduleRecover launches at most one background goroutine per slot to revive
+// a failed slot with exponential backoff. Stops immediately once the slot
+// returns to "ready" or the pool closes (0% CPU when healthy).
+func (p *Pool) scheduleRecover(s *slot) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	s.mu.Lock()
+	if s.state == "ready" || s.recovering {
+		s.mu.Unlock()
+		p.mu.Unlock()
+		return
+	}
+	s.recovering = true
+	s.mu.Unlock()
+	p.wg.Add(1)
+	p.mu.Unlock()
+
+	go func() {
+		defer p.wg.Done()
+		defer func() {
+			s.mu.Lock()
+			s.recovering = false
+			s.mu.Unlock()
+		}()
+
+		for i, wait := range recoverBackoffs {
+			select {
+			case <-p.ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+
+			s.mu.Lock()
+			alreadyReady := s.state == "ready"
+			s.mu.Unlock()
+			if alreadyReady {
+				return
+			}
+
+			active := p.activeSlot()
+			active.mu.Lock()
+			activePrefix := active.prefix
+			active.mu.Unlock()
+
+			tryCtx, cancel := context.WithTimeout(p.ctx, 45*time.Second)
+			err := p.doRecycle(tryCtx, s, activePrefix)
+			cancel()
+			if err == nil {
+				p.log.Printf("masque slot=%d recovered on retry %d", s.id, i+1)
+				return
+			}
+			p.log.Printf("masque slot=%d recovery retry %d/%d failed: %v", s.id, i+1, len(recoverBackoffs), err)
+		}
+	}()
 }
 
 func (p *Pool) Stats() PoolStats {
@@ -487,6 +595,14 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 		if err != nil {
 			lastErr = err
 			p.log.Printf("masque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
+			if attempt < maxRecycleTries {
+				select {
+				case <-ctx.Done():
+					s.setFailed(ctx.Err())
+					return ctx.Err()
+				case <-time.After(800 * time.Millisecond):
+				}
+			}
 			continue
 		}
 		if err := saveSlotConfig(s.configPath, nextCfg); err != nil {
