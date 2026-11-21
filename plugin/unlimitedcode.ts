@@ -265,7 +265,21 @@ async function setup(ctx: any): Promise<void> {
   } catch {}
 
   await ctx.session.hook("retry", async (event: any) => {
-    if (event?.error?.type !== "provider.free-limit") return
+    const errType = String(event?.error?.type ?? "")
+    if (errType !== "provider.free-limit") {
+      // Self-heal if the local proxy daemon was stopped while OpenCode stayed open.
+      const errText = String(event?.error?.message ?? event?.error?.cause?.message ?? event?.error ?? "")
+      const attempt = Number(event?.attempt ?? 1)
+      if (attempt <= 2 && /ECONNREFUSED|Unable to connect|ERR_PROXY_TUNNEL/i.test(errText)) {
+        if (await ensureDaemonRunning()) {
+          ensureProxyEnv()
+          const decision = { retry: true, delay: 200 }
+          event.decision = decision
+          return decision
+        }
+      }
+      return
+    }
 
     const sid = String(event?.sessionID ?? "")
     const attempt = Number(event?.attempt ?? 1)

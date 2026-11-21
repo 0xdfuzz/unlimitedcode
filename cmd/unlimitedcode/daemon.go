@@ -64,7 +64,7 @@ func cmdDaemon(args []string) {
 
 	if *parentPID > 0 {
 		logger.Printf("watching parent pid=%d", *parentPID)
-		go watchParent(ctx, *parentPID, cancel)
+		go watchParent(ctx, *parentPID, cancel, logger.Printf)
 	}
 
 	configState := "loaded"
