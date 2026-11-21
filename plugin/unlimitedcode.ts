@@ -263,11 +263,46 @@ async function requestRotate(event: any, type = "provider.free-limit"): Promise<
   return null
 }
 
+function desktopDraftsDBPath(): string {
+  if (process.platform === "win32" && process.env.APPDATA) {
+    return join(process.env.APPDATA, "ai.opencode.desktop", "drafts.sqlite")
+  }
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Application Support", "ai.opencode.desktop", "drafts.sqlite")
+  }
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "ai.opencode.desktop", "drafts.sqlite")
+}
+
+// Clears OpenCode Desktop's global "free-limit" composer lockout (stored in
+// drafts.sqlite -> state['opencode.global.dat','free-limit']) without touching
+// opencode.db or chat history. Called only at startup and on free-limit events
+// (zero background polling).
+async function clearDesktopFreeLimit(): Promise<void> {
+  const dbPath = desktopDraftsDBPath()
+  if (!existsSync(dbPath)) return
+  try {
+    const mod: any = await import("bun:sqlite")
+    const db = new mod.Database(dbPath)
+    try {
+      db.exec("PRAGMA busy_timeout = 1000")
+      db.run(
+        "UPDATE state SET value = '{\"resetAt\":null}', updated_at = ? WHERE name = 'opencode.global.dat' AND key = 'free-limit' AND value != '{\"resetAt\":null}'",
+        [Date.now()],
+      )
+    } finally {
+      db.close()
+    }
+  } catch {
+    // Non-fatal: Desktop may not be installed or sqlite may be unavailable.
+  }
+}
+
 async function setup(ctx: any): Promise<void> {
   // Set proxy env and register hooks immediately (0ms) so OpenCode startup and
   // new-chat initialization never block on daemon boot.
   ensureProxyEnv()
   void ensureDaemonRunning()
+  void clearDesktopFreeLimit()
 
   if (typeof ctx?.session?.hook !== "function") return
 
@@ -340,7 +375,17 @@ async function setup(ctx: any): Promise<void> {
     ensureProxyEnv()
     if (sid) rotateSessionAlias(sid)
     const decision = await requestRotate(event, "provider.free-limit")
-    if (!decision) return { retry: false, delay: 0 }
+    if (!decision) {
+      if (attempt < MAX_ATTEMPTS) {
+        // Give the MASQUE pool / network a brief window to recover before
+        // letting OpenCode emit session.step.failed and lock the Desktop UI.
+        const backoff = { retry: true, delay: 4000 }
+        event.decision = backoff
+        return backoff
+      }
+      return { retry: false, delay: 0 }
+    }
+    void clearDesktopFreeLimit()
     event.decision = decision
     return decision
   })
