@@ -25,16 +25,16 @@ func TestNormalizePrefix(t *testing.T) {
 }
 
 func TestNextResetUTC(t *testing.T) {
-	before := time.Date(2026, 11, 20, 0, 30, 0, 0, time.UTC)
+	before := time.Date(2026, 11, 20, 0, 0, 30, 0, time.UTC)
 	got := nextResetUTC(before)
-	want := time.Date(2026, 11, 20, 1, 5, 0, 0, time.UTC)
+	want := time.Date(2026, 11, 20, 0, 1, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("before reset: got %s, want %s", got, want)
 	}
 
 	after := time.Date(2026, 11, 20, 2, 0, 0, 0, time.UTC)
 	got = nextResetUTC(after)
-	want = time.Date(2026, 11, 21, 1, 5, 0, 0, time.UTC)
+	want = time.Date(2026, 11, 21, 0, 1, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("after reset: got %s, want %s", got, want)
 	}

@@ -954,11 +954,11 @@ func (p *Pool) pruneBurntLocked(now time.Time) {
 	}
 }
 
-// nextResetUTC returns the next 01:05 UTC (OpenCode resets daily limits
-// between 00:00 and 01:00 UTC).
+// nextResetUTC returns the next 00:01 UTC (OpenCode resets daily IP quotas at
+// 00:00 UTC via buildYYYYMMDD(now); +1 min covers minor clock skew).
 func nextResetUTC(now time.Time) time.Time {
 	u := now.UTC()
-	reset := time.Date(u.Year(), u.Month(), u.Day(), 1, 5, 0, 0, time.UTC)
+	reset := time.Date(u.Year(), u.Month(), u.Day(), 0, 1, 0, 0, time.UTC)
 	if !reset.After(u) {
 		reset = reset.Add(24 * time.Hour)
 	}

@@ -66,8 +66,6 @@ function applySessionAlias(headers: Record<string, string> | Headers, sessionID:
   const keys = [
     "x-opencode-session",
     "x-opencode-session-id",
-    "x-opencode-parent-session-id",
-    "x-parent-session-id",
     "x-session-affinity",
     "x-session-id",
     "X-Session-Id",
@@ -85,8 +83,6 @@ function applySessionAlias(headers: Record<string, string> | Headers, sessionID:
     if (
       low === "x-opencode-session" ||
       low === "x-opencode-session-id" ||
-      low === "x-opencode-parent-session-id" ||
-      low === "x-parent-session-id" ||
       low === "x-session-affinity" ||
       low === "x-session-id"
     ) {
