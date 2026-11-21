@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -33,6 +34,19 @@ func cmdDaemon(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+
+	// Claim the control port before booting MASQUE slots so concurrent plugin
+	// auto-starts (server + TUI + Desktop) exit cleanly without duplicate
+	// Cloudflare registrations or bind-error spam.
+	earlyLn, err := net.Listen("tcp", cfg.Control)
+	if err != nil {
+		return
+	}
+	defer func() {
+		if earlyLn != nil {
+			_ = earlyLn.Close()
+		}
+	}()
 
 	logger, err := logx.New(config.LogPath(), 10<<20, 3, true)
 	if err != nil {
@@ -257,6 +271,10 @@ func cmdDaemon(args []string) {
 	}
 
 	errCh := make(chan error, 2)
+	if earlyLn != nil {
+		_ = earlyLn.Close()
+		earlyLn = nil
+	}
 	go func() { errCh <- p.ListenAndServe() }()
 	go func() { errCh <- c.ListenAndServe() }()
 

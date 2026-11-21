@@ -5,12 +5,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"unlimitedcode/internal/config"
+	"unlimitedcode/internal/control"
 	"unlimitedcode/internal/opencode"
 	"unlimitedcode/internal/setup"
 	"unlimitedcode/plugin"
@@ -179,6 +182,14 @@ func cmdUninstall(args []string) {
 	purge := fs.Bool("purge", false, "also delete UnlimitedCode state directory (config, logs, MASQUE slot keys)")
 	fs.Parse(args)
 
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = config.Default()
+	}
+	if stopRunningDaemon(cfg.Control) {
+		fmt.Println("daemon    stopped")
+	}
+
 	if err := plugin.Uninstall(""); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: remove plugin: %v\n", err)
 	} else {
@@ -208,4 +219,33 @@ func cmdUninstall(args []string) {
 	}
 
 	fmt.Println("UnlimitedCode uninstalled.")
+}
+
+func stopRunningDaemon(controlAddr string) bool {
+	if !setup.Health(controlAddr) {
+		return false
+	}
+	token, err := control.ReadToken(config.TokenPath())
+	if err != nil || token == "" {
+		return false
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://"+controlAddr+"/shutdown", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !setup.Health(controlAddr) {
+			time.Sleep(150 * time.Millisecond)
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
