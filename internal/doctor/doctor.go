@@ -102,14 +102,12 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 
 	for _, shim := range opencode.Shims() {
 		if opencode.IsOpenhopShim(shim) {
-			add("path", Warn, shim+" is an openhop shim; run UnlimitedCode setup --takeover to remove it")
+			add("path", Warn, shim+" is an openhop shim; remove it from PATH so official OpenCode runs cleanly")
 			break
 		}
 	}
 
 	checkRotate(cfg, add)
-	checkObserver(cfg, add)
-	checkResume(cfg, add)
 	checkPlugin(add)
 
 	return checks
@@ -127,85 +125,37 @@ func checkRotate(cfg config.Config, add func(string, string, string)) {
 	add("rotate", Warn, "requires egress.mode=masque")
 }
 
-func checkObserver(cfg config.Config, add func(string, string, string)) {
-	if !cfg.Observer.Enabled {
-		add("observer", OK, "disabled by config")
-		return
-	}
-	path := cfg.Observer.LogPath
-	if path == "" {
-		path = opencode.LogFile()
-	}
-	if path == "" {
-		add("observer", Fail, "cannot resolve the OpenCode log path")
-		return
-	}
-	detail := fmt.Sprintf("%s poll=%ds dedup=%ds grace=%ds",
-		path, cfg.Observer.PollSeconds, cfg.Observer.DedupSeconds, cfg.Observer.PluginGraceSeconds)
-	info, err := os.Stat(path)
-	switch {
-	case os.IsNotExist(err):
-		add("observer", Warn, detail+"; log not present yet")
-	case err != nil:
-		add("observer", Fail, err.Error())
-	case info.IsDir():
-		add("observer", Fail, path+" is a directory")
-	default:
-		add("observer", OK, detail)
-	}
-}
-
-func checkResume(cfg config.Config, add func(string, string, string)) {
-	if !cfg.Resume.Enabled {
-		add("resume", OK, "disabled (opt-in fallback)")
-		return
-	}
-	binary := cfg.Resume.Binary
-	if binary == "" {
-		found, err := opencode.Find()
-		if err != nil {
-			add("resume", Fail, err.Error())
-			return
-		}
-		binary = found
-	}
-	info, err := os.Stat(binary)
-	if err != nil {
-		add("resume", Fail, fmt.Sprintf("%s: %v", binary, err))
-		return
-	}
-	if info.IsDir() {
-		add("resume", Fail, binary+" is a directory")
-		return
-	}
-	if opencode.IsShim(binary) {
-		add("resume", Fail, binary+" is the openhop shim or a launcher")
-		return
-	}
-	add("resume", OK, fmt.Sprintf("%s timeout=%ds sends \"continue\"", binary, cfg.Resume.TimeoutSeconds))
-}
-
 func checkPlugin(add func(string, string, string)) {
 	dir, err := plugin.Dir()
 	if err != nil {
 		add("plugin", Warn, err.Error())
 		return
 	}
-	path := filepath.Join(dir, plugin.Filename)
-	current, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		add("plugin", Warn, "not installed: run UnlimitedCode plugin install")
-		return
+	files := []struct {
+		name string
+		want []byte
+	}{
+		{plugin.Filename, plugin.Source},
+		{plugin.TUIFilename, plugin.TUISource},
+		{plugin.GUIFilename, plugin.GUISource},
 	}
-	if err != nil {
-		add("plugin", Fail, err.Error())
-		return
+	for _, f := range files {
+		path := filepath.Join(dir, f.name)
+		current, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			add("plugin", Warn, "not installed (missing "+f.name+"): run unlimitedcode install")
+			return
+		}
+		if err != nil {
+			add("plugin", Fail, err.Error())
+			return
+		}
+		if !bytes.Equal(current, f.want) {
+			add("plugin", Warn, path+" differs from embedded bundle (rerun unlimitedcode install)")
+			return
+		}
 	}
-	if bytes.Equal(current, plugin.Source) {
-		add("plugin", OK, path)
-		return
-	}
-	add("plugin", Warn, path+" differs from the embedded plugin (rerun UnlimitedCode plugin install)")
+	add("plugin", OK, dir)
 }
 
 func checkGate(ctx context.Context, dialer upstream.Dialer, add func(string, string, string)) {
@@ -249,7 +199,8 @@ func health(ctx context.Context, addr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

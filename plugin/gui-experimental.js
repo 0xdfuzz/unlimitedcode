@@ -10,6 +10,8 @@ const { createSignal, onCleanup, onMount } = require("solid-js")
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const WINDOWS = ["24h", "7d", "30d", "All"]
+const RELEASES_URL = "https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest"
+const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000
 
 function stateHome() {
   if (process.env.UNLIMITEDCODE_HOME) return process.env.UNLIMITEDCODE_HOME
@@ -312,6 +314,87 @@ async function controlCall(endpoint, method = "GET", body, timeoutMs = 8000) {
   }
 }
 
+function parseSemver(raw) {
+  const clean = String(raw || "").trim().replace(/^v/i, "").split(/[-+]/)[0]
+  const parts = clean.split(".").map((n) => Number(n))
+  if (parts.length < 2 || parts.length > 3 || parts.some((n) => !Number.isInteger(n) || n < 0)) {
+    return null
+  }
+  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
+}
+
+function isNewerVersion(current, candidate) {
+  const c = parseSemver(current)
+  const n = parseSemver(candidate)
+  if (!c || !n) return false
+  for (let i = 0; i < 3; i++) {
+    if (n[i] !== c[i]) return n[i] > c[i]
+  }
+  return false
+}
+
+async function checkAvailableUpdate(currentVersion) {
+  if (!currentVersion) return ""
+  const cachePath = path.join(stateHome(), "update_check.json")
+  const now = Date.now()
+  try {
+    const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"))
+    if (cached && now - Number(cached.checked_at || 0) < UPDATE_CHECK_TTL_MS) {
+      const tag = String(cached.tag || "")
+      return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+    }
+  } catch {}
+  try {
+    const res = await fetch(RELEASES_URL, {
+      headers: { accept: "application/vnd.github+json", "user-agent": `unlimitedcode/${currentVersion}` },
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return ""
+    const data = await res.json().catch(() => null)
+    const tag = String(data?.tag_name || "").trim()
+    const version = tag.replace(/^v/i, "")
+    try {
+      fs.writeFileSync(
+        cachePath,
+        JSON.stringify({ checked_at: now, tag, version, html_url: String(data?.html_url || "") }) + "\n",
+      )
+    } catch {}
+    return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+  } catch {
+    return ""
+  }
+}
+
+async function runUpdateBinary() {
+  const bin = installedBinary()
+  if (!fs.existsSync(bin)) {
+    return { ok: false, message: "Installed binary not found (run unlimitedcode install)" }
+  }
+  const ok = await new Promise((resolve) => {
+    try {
+      const childEnv = { ...process.env }
+      delete childEnv.HTTPS_PROXY
+      delete childEnv.HTTP_PROXY
+      delete childEnv.https_proxy
+      delete childEnv.http_proxy
+      const child = spawn(bin, ["update", "--yes"], {
+        stdio: "ignore",
+        windowsHide: true,
+        env: childEnv,
+      })
+      child.on("close", (code) => resolve(code === 0))
+      child.on("error", () => resolve(false))
+    } catch {
+      resolve(false)
+    }
+  })
+  if (ok) {
+    await ensureDaemonRunning()
+    return { ok: true, message: "Updated! Restart OpenCode to reload the plugin." }
+  }
+  return { ok: false, message: 'Update failed — run "unlimitedcode update" in terminal.' }
+}
+
 const SlotSchema = Schema.Struct({
   id: Schema.Number,
   active: Schema.Boolean,
@@ -324,6 +407,7 @@ const SlotSchema = Schema.Struct({
 const StatusSchema = Schema.Struct({
   online: Schema.Boolean,
   version: Schema.String,
+  updateTag: Schema.String,
   ip: Schema.String,
   ready: Schema.Number,
   total: Schema.Number,
@@ -338,12 +422,18 @@ const RotateResultSchema = Schema.Struct({
   durationMs: Schema.Number,
 })
 
+const UpdateResultSchema = Schema.Struct({
+  ok: Schema.Boolean,
+  message: Schema.String,
+})
+
 const UnlimitedIpc = sdk.Ipc.define({
   id: "unlimitedcode.daemon",
   methods: {
     status: { output: StatusSchema },
     rotate: { output: RotateResultSchema },
     restart: { output: StatusSchema },
+    applyUpdate: { output: UpdateResultSchema },
     stats: { output: Schema.String },
   },
 })
@@ -359,6 +449,7 @@ async function fetchSummary() {
     return {
       online: false,
       version: "",
+      updateTag: "",
       ip: "offline",
       ready: 0,
       total: 0,
@@ -377,9 +468,12 @@ async function fetchSummary() {
     recycles: Number(s.recycles ?? 0),
   }))
   const ready = slots.filter((s) => s.state === "ready").length
+  const version = String(st.version || "")
+  const updateTag = version ? await checkAvailableUpdate(version) : ""
   return {
     online: true,
-    version: String(st.version || ""),
+    version,
+    updateTag,
     ip: shortenIPv6(st.pool?.active_ip || "?"),
     ready,
     total: slots.length,
@@ -689,6 +783,17 @@ function buildStatsElement(statsData, initialSummary, dialog, actions) {
     const fRight = document.createElement("div")
     fRight.style.cssText = "display:flex;gap:8px;"
 
+    if (summary.updateTag && actions.applyUpdate) {
+      const updBtn = actionBtn(`Update ${summary.updateTag}`, async () => {
+        updBtn.textContent = "Updating…"
+        const next = await actions.applyUpdate()
+        if (next) summary = next
+        render()
+      })
+      updBtn.style.borderColor = "var(--icon-success-base,#4ade80)"
+      fRight.appendChild(updBtn)
+    }
+
     const rotBtn = actionBtn("Rotate IP", async () => {
       rotBtn.textContent = "Rotating…"
       const next = await actions.rotate()
@@ -743,6 +848,9 @@ exports.default = sdk.Plugin.define({
         await ensureDaemonRunning()
         return await fetchSummary()
       },
+      async applyUpdate() {
+        return await runUpdateBinary()
+      },
       async stats() {
         return computeStatsJSON()
       },
@@ -752,6 +860,7 @@ exports.default = sdk.Plugin.define({
     const [summary, setSummary] = createSignal({
       online: true,
       version: "",
+      updateTag: "",
       ip: "…",
       ready: 0,
       total: 0,
@@ -759,11 +868,23 @@ exports.default = sdk.Plugin.define({
       burnt: 0,
       slots: [],
     })
+    let notifiedUpdate = false
 
     const refresh = async () => {
       try {
         const next = await ctx.main(UnlimitedIpc).status()
-        if (next) setSummary(next)
+        if (next) {
+          setSummary(next)
+          if (!notifiedUpdate && next.updateTag) {
+            notifiedUpdate = true
+            ctx.toasts.show({
+              title: "UnlimitedCode",
+              description: `Update available: ${next.updateTag} — click unlimited to install`,
+              variant: "info",
+              duration: 5000,
+            })
+          }
+        }
         return next
       } catch {
         return null
@@ -816,6 +937,21 @@ exports.default = sdk.Plugin.define({
       }
     }
 
+    const runApplyUpdate = async () => {
+      try {
+        const res = await ctx.main(UnlimitedIpc).applyUpdate()
+        ctx.toasts.show({
+          title: "UnlimitedCode",
+          description: res?.message || "Update finished.",
+          variant: res?.ok ? "success" : "error",
+          duration: 6000,
+        })
+        return await refresh()
+      } catch {
+        return null
+      }
+    }
+
     const openStatsDialog = async () => {
       const [raw, cur] = await Promise.all([
         ctx.main(UnlimitedIpc).stats().catch(() => JSON.stringify({ error: "Unable to load stats." })),
@@ -831,6 +967,7 @@ exports.default = sdk.Plugin.define({
         buildStatsElement(parsed, cur || summary(), dialog, {
           rotate: runRotate,
           restart: runRestart,
+          applyUpdate: runApplyUpdate,
         }),
       )
     }

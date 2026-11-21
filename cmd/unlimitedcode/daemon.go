@@ -10,17 +10,13 @@ import (
 	"syscall"
 	"time"
 
-	"unlimitedcode/internal/activity"
 	"unlimitedcode/internal/config"
 	"unlimitedcode/internal/control"
-	"unlimitedcode/internal/rotate"
 	"unlimitedcode/internal/logx"
-	"unlimitedcode/internal/observer"
-	"unlimitedcode/internal/opencode"
-	"unlimitedcode/internal/proxy"
-	"unlimitedcode/internal/resume"
-	"unlimitedcode/internal/upstream"
 	"unlimitedcode/internal/masque"
+	"unlimitedcode/internal/proxy"
+	"unlimitedcode/internal/rotate"
+	"unlimitedcode/internal/upstream"
 )
 
 func cmdDaemon(args []string) {
@@ -167,75 +163,6 @@ func cmdDaemon(args []string) {
 		logger.Printf("rotate disabled by config")
 	}
 
-	tracker := &activity.Tracker{}
-
-	var resumer *resume.Manager
-	if cfg.Resume.Enabled {
-		binary := cfg.Resume.Binary
-		if binary == "" {
-			found, err := opencode.Find()
-			if err != nil {
-				logger.Printf("warning: resume disabled: %v", err)
-			} else {
-				binary = found
-			}
-		}
-		if binary != "" && opencode.IsShim(binary) {
-			logger.Printf("warning: resume disabled: %s is a shim or launcher", binary)
-			binary = ""
-		}
-		if binary != "" {
-			manager, err := resume.New(resume.Options{
-				Binary:  binary,
-				Env:     withProxyEnv(os.Environ(), "http://"+cfg.Listen),
-				Timeout: time.Duration(cfg.Resume.TimeoutSeconds) * time.Second,
-				Logger:  logger,
-			})
-			if err != nil {
-				logger.Printf("warning: resume unavailable: %v", err)
-			} else {
-				resumer = manager
-				logger.Printf("resume enabled via %s", binary)
-			}
-		}
-	}
-
-	var obs *observer.Observer
-	if cfg.Observer.Enabled {
-		logPath := cfg.Observer.LogPath
-		if logPath == "" {
-			logPath = opencode.LogFile()
-		}
-		switch {
-		case logPath == "":
-			logger.Printf("warning: observer disabled: cannot resolve the OpenCode log path")
-		case rotManager == nil:
-			logger.Printf("warning: observer disabled: rotate is not configured")
-		default:
-			instance, err := observer.New(observer.Options{
-				Path:      logPath,
-				StatePath: config.ObserverStatePath(),
-				Poll:      time.Duration(cfg.Observer.PollSeconds) * time.Second,
-				Dedup:     time.Duration(cfg.Observer.DedupSeconds) * time.Second,
-				Logger:    logger,
-				Suppress: func() bool {
-					return tracker.PluginEventWithin(time.Duration(cfg.Observer.PluginGraceSeconds) * time.Second)
-				},
-				OnQuota: func(session string) {
-					go handleQuota(rotManager, resumer, logger, session)
-				},
-			})
-			if err != nil {
-				logger.Printf("warning: observer unavailable: %v", err)
-			} else {
-				obs = instance
-				logger.Printf("observer watching %s", logPath)
-			}
-		}
-	} else {
-		logger.Printf("observer disabled by config")
-	}
-
 	controlOpts := control.Options{
 		Listen:      cfg.Control,
 		Token:       token,
@@ -244,7 +171,6 @@ func cmdDaemon(args []string) {
 		ProxyListen: cfg.Listen,
 		Egress:      control.Egress{Mode: cfg.Egress.Mode, Upstream: cfg.UpstreamName()},
 		Stats:       p.Stats,
-		Activity:    tracker,
 		OnShutdown:  cancel,
 		Logger:      logger,
 	}
@@ -254,20 +180,10 @@ func cmdDaemon(args []string) {
 	if masquePool != nil {
 		controlOpts.Pool = masquePool.Stats
 	}
-	if obs != nil {
-		controlOpts.Observer = obs.Stats
-	}
-	if resumer != nil {
-		controlOpts.Resume = resumer.Stats
-	}
 	c, err := control.New(controlOpts)
 	if err != nil {
 		logger.Printf("fatal: %v", err)
 		fatal(err)
-	}
-
-	if obs != nil {
-		go obs.Run(ctx)
 	}
 
 	errCh := make(chan error, 2)
@@ -292,26 +208,4 @@ func cmdDaemon(args []string) {
 	p.Close(shutdownCtx)
 	c.Close(shutdownCtx)
 	logger.Printf("UnlimitedCode stopped")
-}
-
-func handleQuota(rotator *rotate.Manager, resumer *resume.Manager, logger *logx.Logger, session string) {
-	if rotator == nil {
-		return
-	}
-	start := time.Now()
-	result := rotator.Hop(context.Background(), rotate.Request{Session: session, Reason: "observer.free-limit"})
-	if result.Status != "ok" {
-		logger.Printf("observer rotate failed session=%s dur=%s: %s",
-			session, time.Since(start).Round(time.Millisecond), result.Error)
-		return
-	}
-	logger.Printf("observer rotate ok session=%s dur=%s", session, time.Since(start).Round(time.Millisecond))
-	if resumer == nil || session == "" {
-		return
-	}
-	if err := resumer.Resume(context.Background(), session); err != nil {
-		logger.Printf("observer resume failed session=%s: %v", session, err)
-		return
-	}
-	logger.Printf("observer resume ok session=%s", session)
 }

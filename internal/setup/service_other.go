@@ -3,7 +3,6 @@
 package setup
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,10 +10,12 @@ import (
 	"unlimitedcode/internal/config"
 )
 
+// InstalledPath is where install keeps a stable copy of the binary.
 func InstalledPath() string {
 	return filepath.Join(config.Home(), "unlimitedcode")
 }
 
+// CopyBinary installs a copy of self at dest using an atomic rename.
 func CopyBinary(self, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		return err
@@ -29,37 +30,26 @@ func CopyBinary(self, dest string) error {
 		return err
 	}
 	defer src.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".UnlimitedCode-*")
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".unlimitedcode-*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
 	if _, err := io.Copy(tmp, src); err != nil {
 		tmp.Close()
-		os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
 		return err
 	}
 	if err := os.Chmod(tmpName, 0o755); err != nil {
-		os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, dest); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return os.Rename(tmpName, dest)
 }
 
-func InstallAutostart(string) (string, error) {
-	return "", errors.New("autostart is only implemented on Windows")
-}
-
-func RemoveAutostart() (string, error) {
+// RemoveLegacyAutostart is a no-op on non-Windows platforms.
+func RemoveLegacyAutostart() (string, error) {
 	return "", nil
 }
-
-func StartDetached(string) error { return errors.New("detached start is only implemented on Windows") }

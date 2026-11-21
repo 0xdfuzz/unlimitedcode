@@ -265,8 +265,7 @@ async function setup(ctx: any): Promise<void> {
     if (event?.error?.type !== "provider.free-limit") return
 
     await ensureDaemonRunning()
-    const st = await syncDaemonState(true)
-    if (st?.hop?.paused) return { retry: false, delay: 0 }
+    await syncDaemonState(true)
 
     const sid = String(event?.sessionID ?? "")
     const attempt = Number(event?.attempt ?? 1)

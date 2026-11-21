@@ -122,63 +122,6 @@ func TestStatusRequiresToken(t *testing.T) {
 	}
 }
 
-func TestEventTriggersHop(t *testing.T) {
-	fake := &fakeHopper{}
-	ts := httptest.NewServer(newServerWithHop(t, fake).Handler())
-	defer ts.Close()
-
-	body := bytes.NewBufferString(`{"type":"provider.free-limit","session":"ses_1","model":"opencode/test","agent":"build","attempt":2}`)
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/event", body)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	var result rotate.Result
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != "ok" {
-		t.Fatalf("result = %+v", result)
-	}
-	if len(fake.reqs) != 1 {
-		t.Fatalf("requests = %+v", fake.reqs)
-	}
-	got := fake.reqs[0]
-	if got.Session != "ses_1" || got.Model != "opencode/test" || got.Attempt != 2 || got.Reason != "provider.free-limit" {
-		t.Fatalf("request = %+v", got)
-	}
-}
-
-func TestEventIgnoresOtherTypes(t *testing.T) {
-	fake := &fakeHopper{}
-	ts := httptest.NewServer(newServerWithHop(t, fake).Handler())
-	defer ts.Close()
-
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/event", bytes.NewBufferString(`{"type":"provider.auth"}`))
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var result rotate.Result
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != "ignored" {
-		t.Fatalf("result = %+v", result)
-	}
-	if len(fake.reqs) != 0 {
-		t.Fatalf("requests = %+v", fake.reqs)
-	}
-}
-
 func TestTokenRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "control.token")
 	first, err := control.EnsureToken(path)

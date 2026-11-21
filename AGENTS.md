@@ -3,21 +3,19 @@
 Engineering rules and architecture contract for **UnlimitedCode**.
 
 ## 1. Package Map
-- `cmd/unlimitedcode/`: CLI entrypoint split by command (`main.go`, `daemon.go`, `install.go`, `setup.go`, `status.go`, `run.go`, `parent_windows.go`, `parent_other.go`).
+- `cmd/unlimitedcode/`: CLI entrypoint split by command (`main.go`, `daemon.go`, `install.go`, `update.go`, `status.go`, `parent_windows.go`, `parent_other.go`).
 - `internal/masque/`: in-process Cloudflare WARP MASQUE L4 client (`client.go`) and warm rotation pool (`pool.go`) with IPv6-first DoH resolution and burned-prefix tracking.
 - `internal/proxy/`: transparent HTTP `CONNECT` proxy with split routing (routed hosts via MASQUE egress, other hosts via direct passthrough when enabled) and pause/close gate for clean rotation.
-- `internal/rotate/`: single-flight rotation coordinator with runtime pause toggle, failure cooldown, and rolling hourly/daily budgets.
-- `internal/control/`: loopback-only authenticated HTTP control API (`/health`, `/status`, `/rotate`, `/pause`, `/event`).
+- `internal/rotate/`: single-flight rotation coordinator with failure cooldown and rolling hourly/daily budgets.
+- `internal/control/`: loopback-only authenticated HTTP control API (`/health`, `/status`, `/rotate`, `/event`, `/shutdown`).
 - `internal/config/`: JSON config loading, defaults, env overrides, and validation.
-- `internal/observer/`: OpenCode service log tail fallback when the plugin is absent.
-- `internal/resume/`: opt-in `opencode run --session <id> continue` fallback.
-- `internal/setup/`: first-run config creation, Windows logon autostart (`UnlimitedCode.vbs`), and optional `openhop` PATH takeover/restore.
+- `internal/setup/`: first-run config creation (`installed_at` marker), OpenCode `service*.json` env updater/cleaner, binary swap, and legacy logon autostart cleanup.
+- `internal/update/`: opt-in GitHub Releases checker with 24h shared cache and SHA-256 checksum verification.
 - `internal/doctor/`: environment and connectivity diagnostics.
-- `internal/opencode/`: official OpenCode binary and log locator.
+- `internal/opencode/`: official OpenCode CLI + Desktop binary locator.
 - `internal/upstream/`: `Dialer` interface and `direct` / `http-connect` implementations.
-- `internal/activity/`: plugin/observer cross-suppression timestamp tracker.
 - `internal/logx/`: rotating file logger.
-- `plugin/`: embedded OpenCode Plugin V2 (`unlimitedcode.ts`) and installer (`plugin.go`).
+- `plugin/`: embedded OpenCode Plugin V2 bundle (`unlimitedcode.ts`, `tui.tsx`, `gui-experimental.js`) and installer (`plugin.go`).
 
 ## 2. Go Style & Minimalism
 - **Stdlib first:** only `github.com/quic-go/quic-go` is used outside Go's standard library (for HTTP/3 MASQUE).

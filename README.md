@@ -64,11 +64,11 @@ curl -fsSL "$URL" -o /tmp/unlimitedcode && chmod +x /tmp/unlimitedcode && /tmp/u
 
 Restart OpenCode and use `/unlimited`, `/unlimited-stats`, or `/rotate`.
 
-Running `unlimitedcode.exe` again opens the maintenance menu (`Repair /
+Running `unlimitedcode` again opens the maintenance menu (`Repair /
 Reinstall`, `Status & Diagnostics`, `Uninstall`). To uninstall from the CLI:
 
 ```sh
-unlimitedcode uninstall --purge
+unlimitedcode uninstall
 ```
 
 ## Build from Source
@@ -78,23 +78,21 @@ Requires Go 1.25 or newer.
 ```sh
 go vet ./...
 go test ./...
-go build -trimpath -ldflags "-s -w -X main.version=0.3.0" -o unlimitedcode.exe ./cmd/unlimitedcode
+go build -trimpath -ldflags "-s -w -X main.version=0.3.2" -o unlimitedcode.exe ./cmd/unlimitedcode
 ```
 
 ## CLI Commands
 
 ```text
-unlimitedcode install   [flags]       install binary, plugin & OpenCode proxy env
-unlimitedcode uninstall [--purge]     remove plugin, proxy env, and optionally state
-unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control server
-unlimitedcode status    [flags] [--json]
-unlimitedcode doctor    [flags]       check config, ports, egress, plugin and opencode
-unlimitedcode rotate    [flags] [--json]
-unlimitedcode setup     [flags]       advanced setup (--takeover, --service, --dry-run)
-unlimitedcode env       [flags] [--format plain|powershell|json]
-unlimitedcode plugin    install|uninstall|path [--dir DIR]
-unlimitedcode run       [flags] -- <command> [args...]
-unlimitedcode version
+unlimitedcode                         interactive menu
+unlimitedcode install   [--config P]  install binary, plugin & OpenCode proxy env
+unlimitedcode update    [--yes]       check & install latest GitHub release
+unlimitedcode uninstall [--keep-state] remove plugin, proxy env, and state
+unlimitedcode status    [--json]      show running daemon status
+unlimitedcode rotate    [--json]      rotate active egress IP now (alias: hop)
+unlimitedcode doctor                  check config, ports, egress, and plugin
+unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control API
+unlimitedcode version                 print version
 ```
 
 ## Configuration
@@ -108,7 +106,6 @@ Key settings (`config.json`, see [config.example.json](config.example.json)):
 - `egress.pool_size`: number of warm in-process MASQUE slots (`1`–`8`, default `2`).
 - `egress.passthrough`: forward non-OpenCode hosts directly (default `true`).
 - `rotate.max_per_hour` / `rotate.max_per_day`: rolling rotation budgets (`30` / `300`, `0` disables).
-- `observer.enabled`: log-tail fallback when the plugin is absent (default `true`).
 
 ## Acknowledgments
 

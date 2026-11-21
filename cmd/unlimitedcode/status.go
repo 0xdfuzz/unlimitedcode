@@ -17,10 +17,42 @@ import (
 	"unlimitedcode/internal/rotate"
 )
 
+func controlRequest(method, addr, path string, body io.Reader, timeout time.Duration) []byte {
+	token, err := control.ReadToken(config.TokenPath())
+	if err != nil {
+		fatal(fmt.Errorf("read control token: %w (is the daemon running?)", err))
+	}
+	req, err := http.NewRequest(method, control.URL(addr)+path, body)
+	if err != nil {
+		fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{Proxy: nil},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		fatal(fmt.Errorf("contact daemon on %s: %w", addr, err))
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		fatal(fmt.Errorf("daemon returned %s: %s", resp.Status, strings.TrimSpace(string(data))))
+	}
+	return data
+}
+
 func cmdStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	o := &overrides{}
-	addOverrides(fs, o)
+	addConfigFlag(fs, o)
 	asJSON := fs.Bool("json", false, "print raw status JSON")
 	fs.Parse(args)
 
@@ -28,29 +60,7 @@ func cmdStatus(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	token, err := control.ReadToken(config.TokenPath())
-	if err != nil {
-		fatal(fmt.Errorf("read control token: %w (is the daemon running?)", err))
-	}
-
-	req, err := http.NewRequest(http.MethodGet, control.URL(cfg.Control)+"/status", nil)
-	if err != nil {
-		fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fatal(fmt.Errorf("contact daemon on %s: %w", cfg.Control, err))
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		fatal(fmt.Errorf("daemon returned %s: %s", resp.Status, strings.TrimSpace(string(body))))
-	}
+	body := controlRequest(http.MethodGet, cfg.Control, "/status", nil, 5*time.Second)
 
 	if *asJSON {
 		var pretty any
@@ -99,27 +109,6 @@ func cmdStatus(args []string) {
 	} else {
 		fmt.Printf("rotate   disabled\n")
 	}
-	if status.Observer != nil {
-		detail := fmt.Sprintf("events=%d dup=%d suppressed=%d errors=%d",
-			status.Observer.Events, status.Observer.Duplicates,
-			status.Observer.Suppressed, status.Observer.Errors)
-		if status.Observer.LastAt != nil {
-			detail += fmt.Sprintf(" last=%s %s",
-				status.Observer.LastAt.Format("15:04:05"), status.Observer.LastTarget)
-		}
-		fmt.Printf("observer %s\n", detail)
-	} else {
-		fmt.Printf("observer disabled\n")
-	}
-	if status.Resume != nil {
-		detail := fmt.Sprintf("count=%d failed=%d busy=%d", status.Resume.Count, status.Resume.Failures, status.Resume.Busy)
-		if status.Resume.LastAt != nil {
-			detail += fmt.Sprintf(" last=%s %s", status.Resume.LastAt.Format("15:04:05"), status.Resume.LastSession)
-		}
-		fmt.Printf("resume   %s\n", detail)
-	} else {
-		fmt.Printf("resume   disabled\n")
-	}
 	if status.Proxy.LastEvent != "" {
 		fmt.Printf("last     %s\n", status.Proxy.LastEvent)
 	}
@@ -128,7 +117,7 @@ func cmdStatus(args []string) {
 func cmdDoctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	o := &overrides{}
-	addOverrides(fs, o)
+	addConfigFlag(fs, o)
 	fs.Parse(args)
 
 	cfg, err := o.load(fs)
@@ -153,7 +142,7 @@ func cmdDoctor(args []string) {
 func cmdRotate(args []string) {
 	fs := flag.NewFlagSet("rotate", flag.ExitOnError)
 	o := &overrides{}
-	addOverrides(fs, o)
+	addConfigFlag(fs, o)
 	asJSON := fs.Bool("json", false, "print the raw result")
 	fs.Parse(args)
 
@@ -161,30 +150,8 @@ func cmdRotate(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	token, err := control.ReadToken(config.TokenPath())
-	if err != nil {
-		fatal(fmt.Errorf("read control token: %w (is the daemon running?)", err))
-	}
-
-	req, err := http.NewRequest(http.MethodPost, control.URL(cfg.Control)+"/rotate", strings.NewReader("{}"))
-	if err != nil {
-		fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: time.Duration(cfg.Rotate.TimeoutSeconds+15) * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fatal(fmt.Errorf("contact daemon on %s: %w", cfg.Control, err))
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		fatal(fmt.Errorf("daemon returned %s: %s", resp.Status, strings.TrimSpace(string(body))))
-	}
+	timeout := time.Duration(cfg.Rotate.TimeoutSeconds+15) * time.Second
+	body := controlRequest(http.MethodPost, cfg.Control, "/rotate", strings.NewReader("{}"), timeout)
 	if *asJSON {
 		fmt.Println(strings.TrimSpace(string(body)))
 		return

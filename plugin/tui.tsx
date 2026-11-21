@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync, statSync } from "node:fs"
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 
 const DEFAULT_CONTROL = "http://127.0.0.1:42988"
 const ROTATE_TIMEOUT_MS = 55_000
+const RELEASES_URL = "https://api.github.com/repos/0xdfuzz/unlimitedcode/releases/latest"
+const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000
 
 const WINDOWS = ["24h", "7d", "30d", "All"] as const
 type WindowKey = (typeof WINDOWS)[number]
@@ -379,6 +381,110 @@ async function loadTokenStats(): Promise<FullStats> {
   }
 }
 
+function parseSemver(raw: string): [number, number, number] | null {
+  const clean = raw.trim().replace(/^v/i, "").split(/[-+]/)[0]
+  const parts = clean.split(".").map((n) => Number(n))
+  if (parts.length < 2 || parts.length > 3 || parts.some((n) => !Number.isInteger(n) || n < 0)) {
+    return null
+  }
+  return [parts[0] || 0, parts[1] || 0, parts[2] || 0]
+}
+
+function isNewerVersion(current: string, candidate: string): boolean {
+  const c = parseSemver(current)
+  const n = parseSemver(candidate)
+  if (!c || !n) return false
+  for (let i = 0; i < 3; i++) {
+    if (n[i] !== c[i]) return n[i] > c[i]
+  }
+  return false
+}
+
+async function checkAvailableUpdate(currentVersion: string): Promise<string> {
+  if (!currentVersion) return ""
+  const cachePath = join(stateHome(), "update_check.json")
+  const now = Date.now()
+  try {
+    const cached = JSON.parse(readFileSync(cachePath, "utf8"))
+    if (cached && now - Number(cached.checked_at || 0) < UPDATE_CHECK_TTL_MS) {
+      const tag = String(cached.tag || "")
+      return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+    }
+  } catch {}
+  try {
+    const res = await fetch(RELEASES_URL, {
+      headers: { accept: "application/vnd.github+json", "user-agent": `unlimitedcode/${currentVersion}` },
+      signal: AbortSignal.timeout(4_000),
+    })
+    if (!res.ok) return ""
+    const data: any = await res.json().catch(() => null)
+    const tag = String(data?.tag_name || "").trim()
+    const version = tag.replace(/^v/i, "")
+    try {
+      writeFileSync(
+        cachePath,
+        JSON.stringify({ checked_at: now, tag, version, html_url: String(data?.html_url || "") }) + "\n",
+      )
+    } catch {}
+    return tag && isNewerVersion(currentVersion, tag) ? tag : ""
+  } catch {
+    return ""
+  }
+}
+
+async function doApplyUpdate(context: any, tag: string): Promise<void> {
+  const bin = installedBinary()
+  if (!existsSync(bin)) {
+    context.ui.toast.show({
+      title: "UnlimitedCode",
+      message: "Installed binary not found (run unlimitedcode install)",
+      variant: "error",
+      duration: 4500,
+    })
+    return
+  }
+  context.ui.toast.show({
+    title: "UnlimitedCode",
+    message: `Updating to ${tag}…`,
+    variant: "info",
+    duration: 4000,
+  })
+  const ok = await new Promise<boolean>((resolve) => {
+    try {
+      const childEnv = { ...process.env }
+      delete childEnv.HTTPS_PROXY
+      delete childEnv.HTTP_PROXY
+      delete childEnv.https_proxy
+      delete childEnv.http_proxy
+      const child = spawn(bin, ["update", "--yes"], {
+        stdio: "ignore",
+        windowsHide: true,
+        env: childEnv,
+      })
+      child.on("close", (code) => resolve(code === 0))
+      child.on("error", () => resolve(false))
+    } catch {
+      resolve(false)
+    }
+  })
+  if (ok) {
+    await ensureDaemonRunning()
+    context.ui.toast.show({
+      title: "UnlimitedCode",
+      message: `Updated to ${tag} — restart OpenCode to reload UI`,
+      variant: "success",
+      duration: 6000,
+    })
+  } else {
+    context.ui.toast.show({
+      title: "UnlimitedCode",
+      message: `Update failed — run "unlimitedcode update" in terminal`,
+      variant: "error",
+      duration: 5000,
+    })
+  }
+}
+
 async function doRotate(context: any): Promise<any | null> {
   context.ui.toast.show({
     title: "UnlimitedCode",
@@ -505,10 +611,9 @@ function StatsDialog(props: { context: any; stats: FullStats; initialStatus: any
   const proxyState = createMemo(() => {
     const st = props.initialStatus
     if (!st) return { label: "OFFLINE", color: c().err, ip: "-", rot: 0, burnt: 0 }
-    const paused = Boolean(st.hop?.paused)
     return {
-      label: paused ? "PAUSED" : "AUTO",
-      color: paused ? c().warn : c().ok,
+      label: "AUTO",
+      color: c().ok,
       ip: shortenIPv6(st.pool?.active_ip || "?"),
       rot: Number(st.hop?.count ?? 0),
       burnt: Number(st.pool?.burnt_count ?? 0),
@@ -673,7 +778,6 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
     ],
   }))
 
-  const paused = () => Boolean(status()?.hop?.paused)
   const slots = () => (Array.isArray(status()?.pool?.slots) ? status().pool.slots : [])
 
   return (
@@ -697,9 +801,7 @@ function StatusDialog(props: { context: any; initialStatus: any }) {
           <box flexDirection="row" justifyContent="space-between" width="100%">
             <text fg={c().muted}>
               {"State      "}
-              <span style={{ fg: paused() ? c().warn : c().ok }}>
-                {paused() ? "⏸ PAUSED" : "● AUTO"}
-              </span>
+              <span style={{ fg: c().ok }}>{"● AUTO"}</span>
             </text>
             <text fg={c().muted}>{`v${status().version || "?"}`}</text>
           </box>
@@ -791,7 +893,7 @@ async function openStatusModal(context: any, status?: any): Promise<void> {
 }
 
 function PromptBadge(props: { context: any; onClick: () => void }) {
-  const [state, setState] = createSignal<"auto" | "paused" | "offline">("auto")
+  const [state, setState] = createSignal<"auto" | "offline">("auto")
   const [hovered, setHovered] = createSignal(false)
 
   const refresh = async () => {
@@ -801,15 +903,28 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
         st = await controlCall("/status", "GET", undefined, 2_000)
       }
     }
-    if (!st) {
-      setState("offline")
-      return
-    }
-    setState(st.hop?.paused ? "paused" : "auto")
+    setState(st ? "auto" : "offline")
   }
 
+  let notifiedUpdate = false
+
   onMount(() => {
-    void refresh()
+    void (async () => {
+      await refresh()
+      const st = await controlCall("/status", "GET", undefined, 1_500)
+      if (!notifiedUpdate && st?.version) {
+        const tag = await checkAvailableUpdate(String(st.version))
+        if (tag) {
+          notifiedUpdate = true
+          props.context.ui.toast.show({
+            title: "UnlimitedCode",
+            message: `Update available: ${tag} — open /unlimited to install`,
+            variant: "info",
+            duration: 5000,
+          })
+        }
+      }
+    })()
     const timer = setInterval(() => {
       void refresh()
     }, 15_000)
@@ -822,9 +937,7 @@ function PromptBadge(props: { context: any; onClick: () => void }) {
       ? theme().text.base
       : state() === "auto"
         ? theme().text.feedback.success.base
-        : state() === "paused"
-          ? theme().text.feedback.warning.base
-          : theme().text.feedback.error.base
+        : theme().text.feedback.error.base
 
   return (
     <box
@@ -880,37 +993,51 @@ export default {
                 const ready = status?.pool?.slots?.filter((s: any) => s.state === "ready").length ?? 0
                 const total = status?.pool?.slots?.length ?? 0
                 const badge = !status ? "OFFLINE" : "AUTO"
+                const updateTag = status?.version ? await checkAvailableUpdate(String(status.version)) : ""
+
+                const options = [
+                  ...(updateTag
+                    ? [
+                        {
+                          title: `Update to ${updateTag}`,
+                          value: "update",
+                          description: `Install latest release (currently v${status.version})`,
+                        },
+                      ]
+                    : []),
+                  {
+                    title: "Usage stats",
+                    value: "stats",
+                    description: "Free tokens, speed & top models",
+                  },
+                  {
+                    title: "Rotate egress IP",
+                    value: "rotate",
+                    description: status ? `${ip} · pool ${ready}/${total}` : "Daemon offline",
+                  },
+                  {
+                    title: "Pool & proxy details",
+                    value: "details",
+                    description: status
+                      ? `rot ${status.hop?.count ?? 0} · burnt ${status.pool?.burnt_count ?? 0}`
+                      : "Daemon offline",
+                  },
+                  {
+                    title: "Restart daemon",
+                    value: "restart",
+                    description: "Reconnect local proxy & MASQUE pool",
+                  },
+                ]
 
                 const choice = await context.ui.dialog.select({
                   title: `UnlimitedCode · ${badge}`,
                   placeholder: "Choose an action",
-                  options: [
-                    {
-                      title: "Usage stats",
-                      value: "stats",
-                      description: "Free tokens, speed & top models",
-                    },
-                    {
-                      title: "Rotate egress IP",
-                      value: "rotate",
-                      description: status ? `${ip} · pool ${ready}/${total}` : "Daemon offline",
-                    },
-                    {
-                      title: "Pool & proxy details",
-                      value: "details",
-                      description: status
-                        ? `rot ${status.hop?.count ?? 0} · burnt ${status.pool?.burnt_count ?? 0}`
-                        : "Daemon offline",
-                    },
-                    {
-                      title: "Restart daemon",
-                      value: "restart",
-                      description: "Reconnect local proxy & MASQUE pool",
-                    },
-                  ],
+                  options,
                 })
 
-                if (choice === "stats") {
+                if (choice === "update" && updateTag) {
+                  await doApplyUpdate(context, updateTag)
+                } else if (choice === "stats") {
                   await openStatsModal(context)
                 } else if (choice === "rotate") {
                   await doRotate(context)

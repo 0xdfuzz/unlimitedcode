@@ -340,15 +340,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		n, _ := io.Copy(remoteConn, rw.Reader)
 		s.bytesUp.Add(n)
 		up = n
+		closeWrite(remote)
 		done <- struct{}{}
 	}()
 	go func() {
 		n, _ := io.Copy(clientConn, remoteConn)
 		s.bytesDown.Add(n)
 		down = n
+		closeWrite(client)
 		done <- struct{}{}
 	}()
 	<-done
+	// Bound half-closed drain so abandoned sockets release goroutines and FDs quickly.
+	drain := time.Now().Add(2 * time.Second)
+	_ = client.SetDeadline(drain)
+	_ = remote.SetDeadline(drain)
 	<-done
 	client.Close()
 	remote.Close()
@@ -411,6 +417,12 @@ func (c idleConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
+
+func closeWrite(conn net.Conn) {
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+}
 
 type logWriter struct{ s *Server }
 

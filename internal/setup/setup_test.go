@@ -9,48 +9,6 @@ import (
 	"unlimitedcode/internal/config"
 )
 
-func TestStripOpenhop(t *testing.T) {
-	separator := string(os.PathListSeparator)
-	npmDir := filepath.Join("demo", "AppData", "Roaming", "npm")
-	input := strings.Join([]string{
-		filepath.Join("demo", "AppData", "Local", "openhop", "bin"),
-		npmDir,
-		filepath.Join("tools", "OpenHop", "bin"),
-	}, separator)
-	got, removed := StripOpenhop(input)
-	if got != npmDir {
-		t.Fatalf("kept %q, want %q", got, npmDir)
-	}
-	if len(removed) != 2 {
-		t.Fatalf("removed %v", removed)
-	}
-}
-
-func TestStripOpenhopKeepsSibling(t *testing.T) {
-	separator := string(os.PathListSeparator)
-	value := strings.Join([]string{
-		filepath.Join("tools", "openhopkit", "bin"),
-		filepath.Join("tools", "openhop", "bin"),
-	}, separator)
-	got, removed := StripOpenhop(value)
-	if !strings.Contains(got, "openhopkit") {
-		t.Fatalf("sibling removed: %q", got)
-	}
-	if len(removed) != 1 {
-		t.Fatalf("removed %v", removed)
-	}
-}
-
-func TestLauncherVBS(t *testing.T) {
-	got := launcherVBS(`C:\Users\demo\UnlimitedCode\unlimitedcode.exe`)
-	if !strings.Contains(got, `"""C:\Users\demo\UnlimitedCode\unlimitedcode.exe"" daemon"`) {
-		t.Fatalf("bad command: %q", got)
-	}
-	if !strings.Contains(got, ", 0, False") {
-		t.Fatalf("not hidden: %q", got)
-	}
-}
-
 func TestEnsureConfigCreates(t *testing.T) {
 	t.Setenv("UNLIMITEDCODE_HOME", t.TempDir())
 	path := config.ConfigPath()
@@ -65,7 +23,7 @@ func TestEnsureConfigCreates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:42987" || !cfg.Rotate.Enabled || !cfg.Observer.Enabled {
+	if cfg.Listen != "127.0.0.1:42987" || !cfg.Rotate.Enabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }

@@ -16,12 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"unlimitedcode/internal/activity"
-	"unlimitedcode/internal/rotate"
-	"unlimitedcode/internal/observer"
-	"unlimitedcode/internal/proxy"
-	"unlimitedcode/internal/resume"
 	"unlimitedcode/internal/masque"
+	"unlimitedcode/internal/proxy"
+	"unlimitedcode/internal/rotate"
 )
 
 type Logger interface {
@@ -41,22 +38,15 @@ type Status struct {
 	Control       string          `json:"control"`
 	Egress        Egress          `json:"egress"`
 	Proxy         proxy.Stats     `json:"proxy"`
-	HopEnabled    bool             `json:"hop_enabled"`
-	Hop           rotate.Stats        `json:"hop"`
+	HopEnabled    bool              `json:"hop_enabled"`
+	Hop           rotate.Stats      `json:"hop"`
 	Pool          *masque.PoolStats `json:"pool,omitempty"`
-	Observer      *observer.Stats  `json:"observer,omitempty"`
-	Resume        *resume.Stats    `json:"resume,omitempty"`
 }
 
 // Hopper is implemented by rotate.Manager.
 type Hopper interface {
 	Hop(context.Context, rotate.Request) rotate.Result
 	Stats() rotate.Stats
-}
-
-type Pauser interface {
-	SetPaused(bool)
-	Paused() bool
 }
 
 type Options struct {
@@ -69,9 +59,6 @@ type Options struct {
 	Stats       func() proxy.Stats
 	Hop         Hopper
 	Pool        func() masque.PoolStats
-	Observer    func() observer.Stats
-	Resume      func() resume.Stats
-	Activity    *activity.Tracker
 	OnShutdown  func()
 	Logger      Logger
 }
@@ -126,7 +113,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/status", s.auth(s.status))
 	mux.HandleFunc("/rotate", s.auth(s.hopHandler))
 	mux.HandleFunc("/hop", s.auth(s.hopHandler))
-	mux.HandleFunc("/pause", s.auth(s.pauseHandler))
 	mux.HandleFunc("/event", s.auth(s.eventHandler))
 	mux.HandleFunc("/shutdown", s.auth(s.shutdownHandler))
 	return mux
@@ -194,14 +180,6 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		stats := s.opts.Pool()
 		status.Pool = &stats
 	}
-	if s.opts.Observer != nil {
-		stats := s.opts.Observer()
-		status.Observer = &stats
-	}
-	if s.opts.Resume != nil {
-		stats := s.opts.Resume()
-		status.Resume = &stats
-	}
 	writeJSON(w, status)
 }
 
@@ -244,35 +222,7 @@ func (s *Server) eventHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, rotate.Result{Status: "ignored"})
 		return
 	}
-	s.opts.Activity.MarkPluginEvent()
 	s.runHop(w, r, ev, ev.Type)
-}
-
-type pausePayload struct {
-	Paused *bool `json:"paused,omitempty"`
-}
-
-func (s *Server) pauseHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	pauser, ok := s.opts.Hop.(Pauser)
-	if !ok || pauser == nil {
-		writeJSON(w, map[string]any{"status": "disabled", "paused": false})
-		return
-	}
-	var p pausePayload
-	if err := decodeJSON(w, r, &p); err != nil && !errors.Is(err, io.EOF) {
-		http.Error(w, "invalid payload: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	next := !pauser.Paused()
-	if p.Paused != nil {
-		next = *p.Paused
-	}
-	pauser.SetPaused(next)
-	writeJSON(w, map[string]any{"status": "ok", "paused": next})
 }
 
 func (s *Server) runHop(w http.ResponseWriter, r *http.Request, ev event, reason string) {

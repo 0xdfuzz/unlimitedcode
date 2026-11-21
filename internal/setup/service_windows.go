@@ -4,23 +4,15 @@ package setup
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"syscall"
 
 	"unlimitedcode/internal/config"
 )
 
-const (
-	createNewProcessGroup = 0x00000200
-	detachedProcess       = 0x00000008
-)
-
-// InstalledPath is where setup keeps a stable copy of the binary for autostart.
+// InstalledPath is where install keeps a stable copy of the binary.
 func InstalledPath() string {
 	return filepath.Join(config.Home(), "unlimitedcode.exe")
 }
@@ -30,30 +22,13 @@ func CopyBinary(self, dest string) error {
 	return copyBinary(self, dest)
 }
 
-// InstallAutostart copies the binary to the state home and writes a hidden
-// logon launcher in the user's Startup folder.
-func InstallAutostart(self string) (string, error) {
-	dest := InstalledPath()
-	if err := copyBinary(self, dest); err != nil {
-		return "", err
+// RemoveLegacyAutostart deletes the Startup VBS launcher written by older versions.
+func RemoveLegacyAutostart() (string, error) {
+	appData := os.Getenv("APPDATA")
+	if appData == "" {
+		return "", nil
 	}
-	startup := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
-	if startup == "" || os.Getenv("APPDATA") == "" {
-		return "", errors.New("APPDATA is not set")
-	}
-	if err := os.MkdirAll(startup, 0o700); err != nil {
-		return "", err
-	}
-	vbs := filepath.Join(startup, "UnlimitedCode.vbs")
-	if err := os.WriteFile(vbs, []byte(launcherVBS(dest)), 0o600); err != nil {
-		return "", err
-	}
-	return vbs, nil
-}
-
-// RemoveAutostart deletes the logon launcher. The installed binary stays.
-func RemoveAutostart() (string, error) {
-	vbs := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "UnlimitedCode.vbs")
+	vbs := filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "UnlimitedCode.vbs")
 	if err := os.Remove(vbs); err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -61,16 +36,6 @@ func RemoveAutostart() (string, error) {
 		return "", err
 	}
 	return vbs, nil
-}
-
-// StartDetached starts the daemon without a console window.
-func StartDetached(exe string) error {
-	cmd := exec.Command(exe, "daemon")
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: detachedProcess | createNewProcessGroup,
-	}
-	return cmd.Start()
 }
 
 func copyBinary(self, dest string) error {

@@ -28,8 +28,6 @@ type Config struct {
 	AllowPorts []int    `json:"allow_ports"`
 	Egress     Egress   `json:"egress"`
 	Rotate     Rotate   `json:"rotate"`
-	Observer   Observer `json:"observer"`
-	Resume     Resume   `json:"resume"`
 	Limits     Limits   `json:"limits"`
 
 	Path string `json:"-"`
@@ -58,20 +56,6 @@ type Rotate struct {
 	MaxPerDay           int  `json:"max_per_day"`
 }
 
-type Observer struct {
-	Enabled            bool   `json:"enabled"`
-	LogPath            string `json:"log_path"`
-	PollSeconds        int    `json:"poll_seconds"`
-	DedupSeconds       int    `json:"dedup_seconds"`
-	PluginGraceSeconds int    `json:"plugin_grace_seconds"`
-}
-
-type Resume struct {
-	Enabled        bool   `json:"enabled"`
-	Binary         string `json:"binary"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
-}
-
 type Limits struct {
 	MaxTunnels         int `json:"max_tunnels"`
 	IdleTimeoutSeconds int `json:"idle_timeout_seconds"`
@@ -94,16 +78,6 @@ func Default() Config {
 			FailureCooldownSecs: 5,
 			MaxPerHour:          30,
 			MaxPerDay:           300,
-		},
-		Observer: Observer{
-			Enabled:            true,
-			PollSeconds:        2,
-			DedupSeconds:       60,
-			PluginGraceSeconds: 15,
-		},
-		Resume: Resume{
-			Enabled:        false,
-			TimeoutSeconds: 300,
 		},
 		Limits: Limits{
 			MaxTunnels:         128,
@@ -137,10 +111,6 @@ func LogPath() string    { return filepath.Join(Home(), "logs", "unlimitedcode.l
 func TokenPath() string  { return filepath.Join(Home(), "control.token") }
 func MasqueDir() string  { return filepath.Join(Home(), "masque") }
 
-// ObserverStatePath stores the log tail offset so a restart does not replay
-// old quota errors.
-func ObserverStatePath() string { return filepath.Join(Home(), "observer.json") }
-
 func Load(path string) (Config, error) {
 	if path == "" {
 		path = ConfigPath()
@@ -151,9 +121,7 @@ func Load(path string) (Config, error) {
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg); err != nil {
+		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&cfg); err != nil {
 			return cfg, fmt.Errorf("parse %s: %w", path, err)
 		}
 	case errors.Is(err, os.ErrNotExist):
@@ -239,42 +207,6 @@ func applyEnv(c *Config) {
 			c.Rotate.MaxPerDay = n
 		}
 	}
-	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			c.Observer.Enabled = b
-		}
-	}
-	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_LOG_PATH"); v != "" {
-		c.Observer.LogPath = v
-	}
-	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_POLL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Observer.PollSeconds = n
-		}
-	}
-	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_DEDUP_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Observer.DedupSeconds = n
-		}
-	}
-	if v := os.Getenv("UNLIMITEDCODE_OBSERVER_PLUGIN_GRACE_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Observer.PluginGraceSeconds = n
-		}
-	}
-	if v := os.Getenv("UNLIMITEDCODE_RESUME_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			c.Resume.Enabled = b
-		}
-	}
-	if v := os.Getenv("UNLIMITEDCODE_RESUME_BINARY"); v != "" {
-		c.Resume.Binary = v
-	}
-	if v := os.Getenv("UNLIMITEDCODE_RESUME_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Resume.TimeoutSeconds = n
-		}
-	}
 }
 
 func (c *Config) Validate() error {
@@ -352,22 +284,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Rotate.MaxPerDay < 0 {
 		return errors.New("rotate.max_per_day must not be negative")
-	}
-
-	if c.Observer.PollSeconds < 1 {
-		return errors.New("observer.poll_seconds must be positive")
-	}
-	if c.Observer.DedupSeconds < 0 {
-		return errors.New("observer.dedup_seconds must not be negative")
-	}
-	if c.Observer.PluginGraceSeconds < 0 {
-		return errors.New("observer.plugin_grace_seconds must not be negative")
-	}
-	if c.Resume.Enabled && !c.Observer.Enabled {
-		return errors.New("resume.enabled requires observer.enabled")
-	}
-	if c.Resume.TimeoutSeconds < 10 {
-		return errors.New("resume.timeout_seconds must be at least 10")
 	}
 	return nil
 }
@@ -477,27 +393,6 @@ func validateLoopback(addr, name string) error {
 		return fmt.Errorf("%s must be a loopback address, got %q", name, host)
 	}
 	return nil
-}
-
-func parseProxy(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", errors.New("empty URL")
-	}
-	u, err := url.Parse(value)
-	if err != nil {
-		return "", err
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("scheme must be http or https, got %q", u.Scheme)
-	}
-	if u.Host == "" {
-		return "", errors.New("missing host")
-	}
-	if u.Path != "" && u.Path != "/" {
-		return "", fmt.Errorf("path is not supported, got %q", u.Path)
-	}
-	return value, nil
 }
 
 func splitList(v string) []string {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -20,40 +21,48 @@ import (
 )
 
 // cmdInstall performs a zero-config plugin-first installation:
-//   1. Copies the UnlimitedCode binary to the state home (so the plugin can launch it on demand).
-//   2. Writes default config.json if missing.
-//   3. Installs the embedded OpenCode plugin (which auto-starts UnlimitedCode with --parent-pid).
-//   4. Stores HTTPS_PROXY/HTTP_PROXY/NO_PROXY in the OpenCode service env.
+//  1. Copies the UnlimitedCode binary to the state home (so the plugin can launch it on demand).
+//  2. Writes default config.json if missing (preserving installed_at across upgrades).
+//  3. Installs the embedded OpenCode plugin bundle (server + TUI + Desktop).
+//  4. Stores HTTPS_PROXY/HTTP_PROXY/NO_PROXY in OpenCode service config files.
 func cmdInstall(args []string, interactive bool) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	o := &overrides{}
 	addConfigFlag(fs, o)
-	autostart := fs.Bool("autostart", false, "also install OS logon autostart (optional; plugin starts UnlimitedCode on demand by default)")
 	fs.Parse(args)
 
 	if interactive {
 		if isAlreadyInstalled() {
 			fmt.Printf("UnlimitedCode v%s (installed)\n\n", version)
 			fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
-			fmt.Println("  [2] Status & Diagnostics")
-			fmt.Println("  [3] Uninstall (remove everything)")
+			fmt.Println("  [2] Check for updates")
+			fmt.Println("  [3] Status & Diagnostics")
+			fmt.Println("  [4] Uninstall (remove everything)")
 			fmt.Println("  [0] Exit")
-			fmt.Print("\nChoose [1/2/3/0]: ")
+			fmt.Print("\nChoose [1/2/3/4/0]: ")
 			choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			fmt.Println()
 			switch strings.TrimSpace(choice) {
 			case "1":
 				// continue into install/repair below
 			case "2":
+				cmdUpdate(nil)
+				pauseIfWindows()
+				return
+			case "3":
 				cmdDoctor(nil)
 				fmt.Println()
-				if setup.Health(config.Default().Control) {
+				cfg, err := config.Load("")
+				if err != nil {
+					cfg = config.Default()
+				}
+				if setup.Health(cfg.Control) {
 					cmdStatus(nil)
 				}
 				pauseIfWindows()
 				return
-			case "3":
-				cmdUninstall([]string{"--purge"})
+			case "4":
+				cmdUninstall(nil)
 				pauseIfWindows()
 				return
 			default:
@@ -81,7 +90,7 @@ func cmdInstall(args []string, interactive bool) {
 	}
 
 	fail := func(err error) {
-		fmt.Fprintf(os.Stderr, "UnlimitedCode: %v\n", err)
+		fmt.Fprintf(os.Stderr, "unlimitedcode: %v\n", err)
 		if interactive {
 			pauseIfWindows()
 		}
@@ -92,7 +101,6 @@ func cmdInstall(args []string, interactive bool) {
 	if err != nil {
 		fail(err)
 	}
-	official, _ := opencode.Find()
 
 	self, err := os.Executable()
 	if err != nil {
@@ -124,24 +132,7 @@ func cmdInstall(args []string, interactive bool) {
 	if _, err := setup.SetOpenCodeServiceEnv(proxyURL); err != nil {
 		fail(fmt.Errorf("configure OpenCode service env: %w", err))
 	}
-	if official != "" {
-		for _, pair := range [][2]string{
-			{"HTTPS_PROXY", proxyURL},
-			{"HTTP_PROXY", proxyURL},
-			{"NO_PROXY", "localhost,127.0.0.1,::1"},
-		} {
-			_ = exec.Command(official, "service", "set", "env", pair[0], pair[1]).Run()
-		}
-	}
 	fmt.Printf("proxy     %s (OpenCode service env)\n", proxyURL)
-
-	if *autostart {
-		vbs, err := setup.InstallAutostart(self)
-		if err != nil {
-			fail(err)
-		}
-		fmt.Printf("autostart %s\n", vbs)
-	}
 
 	// Restart every discovered OpenCode background service (CLI + Desktop sidecar)
 	// so the updated plugin and proxy env apply immediately.
@@ -165,7 +156,7 @@ func isAlreadyInstalled() bool {
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(dir + string(os.PathSeparator) + plugin.Filename)
+	_, err = os.Stat(filepath.Join(dir, plugin.Filename))
 	return err == nil
 }
 
@@ -178,7 +169,9 @@ func pauseIfWindows() {
 
 func cmdUninstall(args []string) {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	purge := fs.Bool("purge", false, "also delete UnlimitedCode state directory (config, logs, MASQUE slot keys)")
+	keepState := fs.Bool("keep-state", false, "keep UnlimitedCode state directory (config, logs, MASQUE slot keys)")
+	// Accepted as a no-op for backwards compatibility (state is purged by default).
+	_ = fs.Bool("purge", true, "remove UnlimitedCode state directory (default)")
 	fs.Parse(args)
 
 	cfg, err := config.Load("")
@@ -195,20 +188,19 @@ func cmdUninstall(args []string) {
 		fmt.Println("plugin    removed")
 	}
 
-	if vbs, err := setup.RemoveAutostart(); err == nil && vbs != "" {
+	if vbs, err := setup.RemoveLegacyAutostart(); err == nil && vbs != "" {
 		fmt.Printf("autostart removed %s\n", vbs)
 	}
 
 	proxyURL := "http://" + cfg.Listen
-	cleared, _ := setup.ClearOpenCodeServiceEnv(proxyURL)
-	if len(cleared) > 0 {
+	if cleared, _ := setup.ClearOpenCodeServiceEnv(proxyURL); len(cleared) > 0 {
 		fmt.Println("proxy     cleared from OpenCode service env")
-		if restartOpenCodeServices() {
-			fmt.Println("opencode  service restarted")
-		}
+	}
+	if restartOpenCodeServices() {
+		fmt.Println("opencode  service restarted")
 	}
 
-	if *purge {
+	if !*keepState {
 		home := config.Home()
 		if err := os.RemoveAll(home); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: remove %s: %v\n", home, err)

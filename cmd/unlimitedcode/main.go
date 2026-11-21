@@ -10,7 +10,7 @@ import (
 	"unlimitedcode/internal/config"
 )
 
-var version = "0.2.0-dev"
+var version = "0.3.2-dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -22,59 +22,52 @@ func main() {
 		cmdInstall(os.Args[2:], false)
 	case "uninstall":
 		cmdUninstall(os.Args[2:])
+	case "update":
+		cmdUpdate(os.Args[2:])
 	case "daemon":
 		cmdDaemon(os.Args[2:])
 	case "status":
 		cmdStatus(os.Args[2:])
 	case "doctor":
 		cmdDoctor(os.Args[2:])
-	case "setup":
-		cmdSetup(os.Args[2:])
-	case "env":
-		cmdEnv(os.Args[2:])
 	case "rotate", "hop":
 		cmdRotate(os.Args[2:])
-	case "plugin":
-		cmdPlugin(os.Args[2:])
-	case "run":
-		cmdRun(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "UnlimitedCode: unknown command %q\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unlimitedcode: unknown command %q\n", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `UnlimitedCode - local egress daemon for official OpenCode
+	fmt.Fprint(os.Stderr, `UnlimitedCode - local egress proxy & IP rotator for OpenCode
 
 usage:
-  unlimitedcode install   [flags]       install plugin & proxy for OpenCode (default when run with no args)
-  unlimitedcode uninstall [--purge]     remove plugin, proxy env, and optionally state
-  unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control server
-  unlimitedcode status    [flags]       show daemon status
-  unlimitedcode doctor    [flags]       check config, ports, egress, plugin and opencode
-  unlimitedcode rotate    [flags]       request one egress rotation (alias: hop)
-  unlimitedcode setup     [flags]       advanced setup (--takeover, --service, --dry-run)
-  unlimitedcode env       [flags]       print proxy environment variables
-  unlimitedcode plugin    install|uninstall|path
-  unlimitedcode run       [flags] -- <command> [args...]
-  unlimitedcode version
+  unlimitedcode                         interactive menu
+  unlimitedcode install   [--config P]  install plugin & proxy for OpenCode
+  unlimitedcode update    [--yes]       check & install latest GitHub release
+  unlimitedcode uninstall [--keep-state] remove plugin, proxy env, and state
+  unlimitedcode status    [--json]      show running daemon status
+  unlimitedcode rotate    [--json]      rotate active egress IP now
+  unlimitedcode doctor                  check config, ports, egress, and plugin
+  unlimitedcode daemon    [flags]       run the proxy, MASQUE pool and control API
+  unlimitedcode version                 print version
 
-common flags:
-  --config PATH                   config file (default: state home)
-  --listen ADDR                   proxy listen address
-  --control ADDR                  control listen address
-  --egress MODE                   masque | http-connect | direct
-  --upstream URL                  http-connect upstream
-  --allow HOSTS                   comma-separated hosts routed via egress
-  --allow-ports PORTS             comma-separated ports (default 443,80)
-  --max-tunnels N                 concurrent tunnel limit
-  --direct-fallback               fall back to direct when the upstream fails
+daemon flags:
+  --config PATH         config file (default: state home)
+  --listen ADDR         proxy listen address (default 127.0.0.1:42987)
+  --control ADDR        control API address (default 127.0.0.1:42988)
+  --egress MODE         masque | http-connect | direct
+  --upstream URL        http-connect upstream URL
+  --allow HOSTS         comma-separated hosts routed via egress
+  --allow-ports PORTS   comma-separated ports (default 443,80)
+  --max-tunnels N       concurrent tunnel limit
+  --direct-fallback     fall back to direct when egress fails
+  --parent-pid PID      exit cleanly when parent PID terminates
 `)
 }
 

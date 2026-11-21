@@ -142,22 +142,6 @@ func Shims() []string {
 	return out
 }
 
-// First returns the launcher a shell would run first, including a shim.
-func First() string {
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" {
-			continue
-		}
-		for _, name := range Names() {
-			candidate := filepath.Join(dir, name)
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				return candidate
-			}
-		}
-	}
-	return ""
-}
-
 func Version(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -167,25 +151,4 @@ func Version(ctx context.Context, path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
-}
-
-// DataDir mirrors the OpenCode data directory used by 2.2.5.
-func DataDir() string {
-	if value := os.Getenv("XDG_DATA_HOME"); value != "" {
-		return filepath.Join(value, "opencode")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share", "opencode")
-}
-
-// LogFile is the service log path. Standalone runs use opencode-local.log.
-func LogFile() string {
-	dir := DataDir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "log", "opencode.log")
 }

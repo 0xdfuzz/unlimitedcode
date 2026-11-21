@@ -87,13 +87,17 @@ func TestRejectsBadEgress(t *testing.T) {
 	}
 }
 
-func TestRejectsUnknownField(t *testing.T) {
+func TestIgnoresUnknownLegacyField(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"listen":"127.0.0.1:42987","policy":{"mode":"full"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"listen":"127.0.0.1:42987","resume":{"enabled":false,"timeout_seconds":300}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err == nil {
-		t.Fatal("unknown config key must fail")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("legacy keys should be ignored cleanly: %v", err)
+	}
+	if cfg.Listen != "127.0.0.1:42987" {
+		t.Fatalf("listen = %q", cfg.Listen)
 	}
 }
 
@@ -181,35 +185,5 @@ func TestRotateValidation(t *testing.T) {
 	cfg.Rotate.MaxPerDay = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("negative daily limit must fail")
-	}
-}
-
-func TestObserverAndResumeValidation(t *testing.T) {
-	cfg := Default()
-	cfg.Observer.PollSeconds = 0
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("zero poll must fail")
-	}
-	cfg = Default()
-	cfg.Observer.DedupSeconds = -1
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("negative dedup must fail")
-	}
-	cfg = Default()
-	cfg.Observer.PluginGraceSeconds = -1
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("negative grace must fail")
-	}
-	cfg = Default()
-	cfg.Observer.Enabled = false
-	cfg.Resume.Enabled = true
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("resume without observer must fail")
-	}
-	cfg = Default()
-	cfg.Resume.Enabled = true
-	cfg.Resume.TimeoutSeconds = 5
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("resume timeout below ten seconds must fail")
 	}
 }

@@ -22,18 +22,6 @@
     "max_per_hour": 30,
     "max_per_day": 300
   },
-  "observer": {
-    "enabled": true,
-    "log_path": "",
-    "poll_seconds": 2,
-    "dedup_seconds": 60,
-    "plugin_grace_seconds": 15
-  },
-  "resume": {
-    "enabled": false,
-    "binary": "",
-    "timeout_seconds": 300
-  },
   "limits": {
     "max_tunnels": 128,
     "idle_timeout_seconds": 300,

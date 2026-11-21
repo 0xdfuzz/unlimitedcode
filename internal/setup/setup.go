@@ -31,11 +31,37 @@ func EnsureConfig(path string) (string, bool, error) {
 		return "", false, err
 	}
 	raw = append(raw, '\n')
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := writeAtomic(path, raw, 0o600); err != nil {
 		return "", false, err
 	}
-	ensureInstalledAt(filepath.Dir(path))
 	return path, true, nil
+}
+
+func writeAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	_ = os.Chmod(tmpName, perm)
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return os.WriteFile(path, data, perm)
+	}
+	return nil
 }
 
 // ensureInstalledAt writes a one-time Unix millisecond timestamp marking when
@@ -105,7 +131,9 @@ func SetOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 	for _, file := range files {
 		doc := map[string]any{}
 		if raw, err := os.ReadFile(file); err == nil && len(raw) > 0 {
-			_ = json.Unmarshal(raw, &doc)
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				return updated, err
+			}
 		}
 		envMap, ok := doc["env"].(map[string]any)
 		if !ok || envMap == nil {
@@ -121,7 +149,7 @@ func SetOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 			return updated, err
 		}
 		out = append(out, '\n')
-		if err := os.WriteFile(file, out, 0o600); err != nil {
+		if err := writeAtomic(file, out, 0o600); err != nil {
 			return updated, err
 		}
 		updated = append(updated, file)
@@ -176,7 +204,7 @@ func ClearOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 			continue
 		}
 		out = append(out, '\n')
-		if err := os.WriteFile(file, out, 0o600); err == nil {
+		if err := writeAtomic(file, out, 0o600); err == nil {
 			updated = append(updated, file)
 		}
 	}
