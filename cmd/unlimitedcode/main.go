@@ -32,6 +32,8 @@ func main() {
 		cmdDoctor(os.Args[2:])
 	case "rotate", "hop":
 		cmdRotate(os.Args[2:])
+	case "reset":
+		cmdReset(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -53,6 +55,7 @@ usage:
   unlimitedcode uninstall    remove plugin, proxy env, and state
   unlimitedcode status       show running daemon status (--json)
   unlimitedcode rotate       rotate active egress IP now (--json)
+  unlimitedcode reset        clear OpenCode limit lock & restart proxy
   unlimitedcode doctor       check environment & connectivity
   unlimitedcode daemon       run the local daemon (see: daemon --help)
   unlimitedcode version      print version

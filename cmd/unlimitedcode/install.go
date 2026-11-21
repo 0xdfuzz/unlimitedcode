@@ -48,9 +48,10 @@ func cmdInstall(args []string, interactive bool) {
 				fmt.Printf("  [1] Update to %s\n", avail.Tag)
 				fmt.Println("  [2] Repair / Reinstall (current binary)")
 				fmt.Println("  [3] Status & Diagnostics")
-				fmt.Println("  [4] Uninstall (remove everything)")
+				fmt.Println("  [4] Clear OpenCode Limit Lock (reset UI & proxy)")
+				fmt.Println("  [5] Uninstall (remove everything)")
 				fmt.Println("  [0] Exit")
-				fmt.Print("\nChoose [1/2/3/4/0]: ")
+				fmt.Print("\nChoose [1/2/3/4/5/0]: ")
 				choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 				fmt.Println()
 				switch strings.TrimSpace(choice) {
@@ -67,6 +68,10 @@ func cmdInstall(args []string, interactive bool) {
 					pauseIfWindows()
 					return
 				case "4":
+					cmdReset(nil)
+					pauseIfWindows()
+					return
+				case "5":
 					cmdUninstall(nil)
 					pauseIfWindows()
 					return
@@ -78,9 +83,10 @@ func cmdInstall(args []string, interactive bool) {
 				fmt.Println("  [1] Repair / Reinstall (update binary, plugin & proxy)")
 				fmt.Println("  [2] Check for updates")
 				fmt.Println("  [3] Status & Diagnostics")
-				fmt.Println("  [4] Uninstall (remove everything)")
+				fmt.Println("  [4] Clear OpenCode Limit Lock (reset UI & proxy)")
+				fmt.Println("  [5] Uninstall (remove everything)")
 				fmt.Println("  [0] Exit")
-				fmt.Print("\nChoose [1/2/3/4/0]: ")
+				fmt.Print("\nChoose [1/2/3/4/5/0]: ")
 				choice, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 				fmt.Println()
 				switch strings.TrimSpace(choice) {
@@ -95,6 +101,10 @@ func cmdInstall(args []string, interactive bool) {
 					pauseIfWindows()
 					return
 				case "4":
+					cmdReset(nil)
+					pauseIfWindows()
+					return
+				case "5":
 					cmdUninstall(nil)
 					pauseIfWindows()
 					return
@@ -273,6 +283,86 @@ func cmdUninstall(args []string) {
 	}
 
 	fmt.Println("UnlimitedCode uninstalled.")
+}
+
+// cmdReset clears OpenCode Desktop's global free-limit UI lock (if stuck)
+// and restarts the UnlimitedCode daemon + OpenCode service with a fresh pool.
+func cmdReset(args []string) {
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = config.Default()
+	}
+	if stopRunningDaemon(cfg.Control) {
+		fmt.Println("daemon    stopped (will restart fresh)")
+	} else {
+		fmt.Println("daemon    not running (will start fresh)")
+	}
+	if clearDesktopFreeLimitViaTool() {
+		fmt.Println("desktop   free-limit lock cleared")
+	}
+	if restartOpenCodeServices() {
+		fmt.Println("opencode  service restarted")
+	}
+	fmt.Println("\nReset complete! Reopen OpenCode Desktop to unlock the chat input.")
+}
+
+func desktopDraftsDBPath() string {
+	switch runtime.GOOS {
+	case "windows":
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, "ai.opencode.desktop", "drafts.sqlite")
+		}
+	case "darwin":
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop", "drafts.sqlite")
+		}
+	default:
+		base := os.Getenv("XDG_CONFIG_HOME")
+		if base == "" {
+			if home, err := os.UserHomeDir(); err == nil && home != "" {
+				base = filepath.Join(home, ".config")
+			}
+		}
+		if base != "" {
+			return filepath.Join(base, "ai.opencode.desktop", "drafts.sqlite")
+		}
+	}
+	return ""
+}
+
+// clearDesktopFreeLimitViaTool resets Desktop's global free-limit key using an
+// installed helper (bun / sqlite3 / python3) if present; OpenCode service
+// restart also runs the same cleanup inside OpenCode's embedded Bun runtime.
+func clearDesktopFreeLimitViaTool() bool {
+	dbPath := desktopDraftsDBPath()
+	if dbPath == "" {
+		return false
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if bunBin, err := exec.LookPath("bun"); err == nil {
+		script := `import { Database } from "bun:sqlite"; const db = new Database(process.argv[1]); try { db.exec("PRAGMA busy_timeout = 1000"); db.run("UPDATE state SET value = '{\"resetAt\":null}', updated_at = ? WHERE name = 'opencode.global.dat' AND key = 'free-limit'", [Date.now()]); } finally { db.close(); }`
+		if exec.CommandContext(ctx, bunBin, "-e", script, dbPath).Run() == nil {
+			return true
+		}
+	}
+	if sqBin, err := exec.LookPath("sqlite3"); err == nil {
+		sql := fmt.Sprintf("PRAGMA busy_timeout=1000; UPDATE state SET value='{\"resetAt\":null}', updated_at=%d WHERE name='opencode.global.dat' AND key='free-limit';", time.Now().UnixMilli())
+		if exec.CommandContext(ctx, sqBin, dbPath, sql).Run() == nil {
+			return true
+		}
+	}
+	if pyBin, err := exec.LookPath("python3"); err == nil {
+		py := `import sqlite3, sys, time; c = sqlite3.connect(sys.argv[1], timeout=1); c.execute("UPDATE state SET value='{\"resetAt\":null}', updated_at=? WHERE name='opencode.global.dat' AND key='free-limit'", (int(time.time()*1000),)); c.commit(); c.close()`
+		if exec.CommandContext(ctx, pyBin, "-c", py, dbPath).Run() == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func restartOpenCodeServices() bool {
