@@ -1095,22 +1095,9 @@ exports.default = sdk.Plugin.define({
     })
 
     ctx.add(sdk.Command, () => ({
-      id: "stats",
-      title: "UnlimitedCode: Usage Stats",
-      description: "OpenCode free-tier tokens, speed & top models since install",
-      group: "UnlimitedCode",
-      featured: true,
-      suggested: true,
-      slash: { name: "unlimited-stats" },
-      run() {
-        void openStatsDialog()
-      },
-    }))
-
-    ctx.add(sdk.Command, () => ({
       id: "menu",
-      title: "UnlimitedCode: Status & Controls",
-      description: "Open UnlimitedCode stats, IP rotation & daemon controls",
+      title: "UnlimitedCode",
+      description: "Free usage stats, MASQUE pool status, IP rotation & daemon controls",
       group: "UnlimitedCode",
       featured: true,
       suggested: true,
