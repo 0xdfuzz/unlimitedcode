@@ -28,9 +28,10 @@ import (
 )
 
 const (
-	defaultPoolSize = 2
-	maxRecycleTries = 8
-	maxBurntEntries = 200
+	defaultPoolSize     = 2
+	maxRecycleTries     = 15
+	recycleSearchBudget = 25 * time.Second
+	maxBurntEntries     = 500
 )
 
 // recoverBackoffs controls the exponential backoff schedule used to revive a
@@ -681,85 +682,111 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 	needReEnroll := !hasCreds
 	configChanged := false
 	enrollErr := false
+	searchDeadline := time.Now().Add(recycleSearchBudget)
 	for attempt := 1; attempt <= maxRecycleTries; attempt++ {
 		if ctx.Err() != nil {
 			lastErr = ctx.Err()
 			break
 		}
+		if fallbackClient != nil && time.Now().After(searchDeadline) {
+			break
+		}
+
+		if !needReEnroll {
+			// Fast path: race 2 parallel QUIC re-dials (.198.1 and .198.2)
+			// using the existing enrolled key. Each round draws 2 independent
+			// IPv6 /64s in ~450ms with zero api.cloudflareclient.com calls,
+			// zero 429/1015 risk, and zero revocation of draining streams.
+			client, cfgUsed, trace, clean, err := p.dialRacePair(ctx, s.id, prev, avoidPrefix)
+			if err != nil {
+				lastErr = err
+				p.log.Printf("masque slot=%d recycle round=%d verify error: %v", s.id, attempt, err)
+				// Fall back to key re-enrollment on the next attempt in case
+				// the stored key was revoked or expired.
+				needReEnroll = true
+				continue
+			}
+			gotIP := trace["ip"]
+			gotPrefix := NormalizePrefix(gotIP)
+			if clean || attempt == maxRecycleTries {
+				if configChanged {
+					if err := saveSlotConfig(s.configPath, cfgUsed); err != nil {
+						p.log.Printf("masque slot=%d recycle round=%d save error: %v", s.id, attempt, err)
+					}
+				}
+				p.installSlotClient(s, cfgUsed, client, trace)
+				s.mu.Lock()
+				s.recycles++
+				s.mu.Unlock()
+				p.log.Printf("masque slot=%d recycled round=%d ip=%s prefix=%s", s.id, attempt, gotIP, gotPrefix)
+				return nil
+			}
+			if fallbackClient != nil {
+				_ = fallbackClient.Close()
+			}
+			fallbackClient = client
+			fallbackCfg = cfgUsed
+			fallbackTrace = trace
+			p.log.Printf("masque slot=%d recycle round=%d landed on burnt/same prefix %s (%s), retrying", s.id, attempt, gotPrefix, gotIP)
+			continue
+		}
 
 		var nextCfg slotConfig
 		var err error
-		if !needReEnroll {
-			// Fast path: opening a fresh QUIC connection with the existing
-			// enrolled key already draws a new IPv6 /64 from Cloudflare's edge
-			// pool in ~450ms with zero api.cloudflareclient.com calls, zero
-			// 429/1015 risk, and zero revocation of draining streams.
-			nextCfg = prev
-			if attempt%2 == 0 {
-				if nextCfg.EndpointV4 == "162.159.198.1" {
-					nextCfg.EndpointV4 = "162.159.198.2"
-				} else if nextCfg.EndpointV4 == "162.159.198.2" {
-					nextCfg.EndpointV4 = "162.159.198.1"
-				}
+		p.mu.Lock()
+		inRegBackoff := time.Now().Before(p.regBackoffUntil)
+		p.mu.Unlock()
+		// Fallback path (missing/rejected key): prefer PATCH /reg/<id>
+		// before POST /reg to avoid Cloudflare's stricter 1015 limit.
+		canPatch := !enrollErr && prev.ID != "" && prev.AccessToken != ""
+		if canPatch && (attempt <= 2 || inRegBackoff) {
+			nextCfg, err = enrollNewKey(ctx, prev)
+			if err != nil && !isTransientNetErr(err) {
+				enrollErr = true
 			}
+		} else if inRegBackoff {
+			lastErr = errors.New("register device: cooling down after cloudflare 429/1015")
+			break
 		} else {
-			p.mu.Lock()
-			inRegBackoff := time.Now().Before(p.regBackoffUntil)
-			p.mu.Unlock()
-			// Fallback path (missing/rejected key): prefer PATCH /reg/<id>
-			// before POST /reg to avoid Cloudflare's stricter 1015 limit.
-			canPatch := !enrollErr && prev.ID != "" && prev.AccessToken != ""
-			if canPatch && (attempt <= 2 || inRegBackoff) {
-				nextCfg, err = enrollNewKey(ctx, prev)
-				if err != nil && !isTransientNetErr(err) {
-					enrollErr = true
-				}
-			} else if inRegBackoff {
-				lastErr = errors.New("register device: cooling down after cloudflare 429/1015")
-				break
-			} else {
-				nextCfg, err = registerAndEnroll(ctx)
-				if err != nil && isRateLimitErr(err) {
-					p.mu.Lock()
-					p.regBackoffUntil = time.Now().Add(90 * time.Second)
-					p.mu.Unlock()
-					if canPatch {
-						nextCfg, err = enrollNewKey(ctx, prev)
-						if err != nil && !isTransientNetErr(err) {
-							enrollErr = true
-						}
+			nextCfg, err = registerAndEnroll(ctx)
+			if err != nil && isRateLimitErr(err) {
+				p.mu.Lock()
+				p.regBackoffUntil = time.Now().Add(90 * time.Second)
+				p.mu.Unlock()
+				if canPatch {
+					nextCfg, err = enrollNewKey(ctx, prev)
+					if err != nil && !isTransientNetErr(err) {
+						enrollErr = true
 					}
 				}
 			}
-			if err != nil {
-				lastErr = err
-				p.log.Printf("masque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
-				if isRateLimitErr(err) {
-					break
-				}
-				if attempt < maxRecycleTries {
-					timer := time.NewTimer(800 * time.Millisecond)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						lastErr = ctx.Err()
-						goto done
-					case <-timer.C:
-					}
-				}
-				continue
-			}
-			prev = nextCfg
-			configChanged = true
-			needReEnroll = false
 		}
+		if err != nil {
+			lastErr = err
+			p.log.Printf("masque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
+			if isRateLimitErr(err) {
+				break
+			}
+			if attempt < maxRecycleTries {
+				timer := time.NewTimer(800 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					lastErr = ctx.Err()
+					goto done
+				case <-timer.C:
+				}
+			}
+			continue
+		}
+		prev = nextCfg
+		configChanged = true
+		needReEnroll = false
 
 		client, trace, err := dialAndVerify(ctx, nextCfg)
 		if err != nil {
 			lastErr = err
 			p.log.Printf("masque slot=%d recycle try=%d verify error: %v", s.id, attempt, err)
-			// If a zero-API QUIC re-dial fails, fall back to key re-enrollment
-			// on the next attempt in case the stored key was revoked or expired.
 			needReEnroll = true
 			continue
 		}
@@ -817,6 +844,78 @@ done:
 	}
 	s.setFailed(lastErr)
 	return lastErr
+}
+
+// dialRacePair dials two MASQUE QUIC connections in parallel (162.159.198.1 and
+// 162.159.198.2) using the same enrolled key. Returns immediately on the first
+// clean /64 prefix and closes any unused socket cleanly.
+func (p *Pool) dialRacePair(ctx context.Context, slotID int, base slotConfig, avoidPrefix string) (*l4Client, slotConfig, map[string]string, bool, error) {
+	cfgA := base
+	cfgB := base
+	if base.EndpointV4 == "162.159.198.1" {
+		cfgB.EndpointV4 = "162.159.198.2"
+	} else if base.EndpointV4 == "162.159.198.2" {
+		cfgB.EndpointV4 = "162.159.198.1"
+	}
+	cfgs := []slotConfig{cfgA, cfgB}
+
+	type probeRes struct {
+		client *l4Client
+		cfg    slotConfig
+		trace  map[string]string
+		clean  bool
+		err    error
+	}
+
+	rctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan probeRes, len(cfgs))
+	for _, cfg := range cfgs {
+		go func(c slotConfig) {
+			cl, tr, err := dialAndVerify(rctx, c)
+			if err != nil {
+				results <- probeRes{err: err}
+				return
+			}
+			prefix := NormalizePrefix(tr["ip"])
+			clean := prefix != avoidPrefix && !p.isPrefixInUseByOther(slotID, prefix) && !p.isBurnt(prefix)
+			results <- probeRes{client: cl, cfg: c, trace: tr, clean: clean}
+		}(cfg)
+	}
+
+	var (
+		best    *probeRes
+		lastErr error
+	)
+	for i := 0; i < len(cfgs); i++ {
+		res := <-results
+		if res.err != nil {
+			lastErr = res.err
+			continue
+		}
+		if res.clean && (best == nil || !best.clean) {
+			if best != nil && best.client != nil {
+				_ = best.client.Close()
+			}
+			winner := res
+			best = &winner
+			cancel()
+			continue
+		}
+		if best == nil {
+			cand := res
+			best = &cand
+		} else if res.client != nil {
+			_ = res.client.Close()
+		}
+	}
+	if best != nil {
+		return best.client, best.cfg, best.trace, best.clean, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("parallel dial failed")
+	}
+	return nil, slotConfig{}, nil, false, lastErr
 }
 
 func dialAndVerify(ctx context.Context, cfg slotConfig) (*l4Client, map[string]string, error) {
@@ -1230,11 +1329,14 @@ func fetchTrace(ctx context.Context, client *l4Client) (map[string]string, error
 	if vals, err := fetchTraceTarget(ctx, client, "[2606:4700:4700::1111]:443"); err == nil {
 		return vals, nil
 	}
+	if vals, err := fetchTraceTarget(ctx, client, "[2606:4700:4700::1001]:443"); err == nil {
+		return vals, nil
+	}
 	return fetchTraceTarget(ctx, client, "1.1.1.1:443")
 }
 
 func fetchTraceTarget(ctx context.Context, client *l4Client, target string) (map[string]string, error) {
-	tctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, 3500*time.Millisecond)
 	defer cancel()
 
 	raw, err := client.DialContext(tctx, target)
