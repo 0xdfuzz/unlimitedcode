@@ -77,6 +77,7 @@ type slot struct {
 	id         int
 	configPath string
 
+	recycleMu  sync.Mutex // serializes recycles on this slot (prevents bg + sync race)
 	mu         sync.Mutex
 	cfg        slotConfig
 	client     *l4Client
@@ -574,7 +575,15 @@ func (p *Pool) bootSlot(ctx context.Context, s *slot) error {
 }
 
 func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) error {
+	s.recycleMu.Lock()
+	defer s.recycleMu.Unlock()
+
 	s.mu.Lock()
+	if s.state == "ready" && s.prefix != "" && s.prefix != avoidPrefix && !p.isBurnt(s.prefix) {
+		// Another goroutine already recycled this slot to a fresh /64 while we waited.
+		s.mu.Unlock()
+		return nil
+	}
 	s.state = "recycling"
 	prev := s.cfg
 	// If sibling sub-agents are still actively streaming on s.client, do not

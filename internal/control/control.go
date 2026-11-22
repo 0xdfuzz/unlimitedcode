@@ -33,6 +33,7 @@ type Egress struct {
 type Status struct {
 	Version         string            `json:"version"`
 	UpdateAvailable string            `json:"update_available,omitempty"`
+	Conflicts       []string          `json:"conflicts,omitempty"`
 	StartedAt       time.Time         `json:"started_at"`
 	UptimeSeconds   int64             `json:"uptime_seconds"`
 	Listen          string            `json:"listen"`
@@ -55,6 +56,8 @@ type Options struct {
 	Token           string
 	Version         string
 	UpdateAvailable func() string
+	Conflicts       func() []string
+	OnFixConflicts  func(context.Context) ([]string, []string)
 	StartedAt       time.Time
 	ProxyListen     string
 	Egress          Egress
@@ -120,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/rotate", s.auth(s.hopHandler))
 	mux.HandleFunc("/hop", s.auth(s.hopHandler))
 	mux.HandleFunc("/event", s.auth(s.eventHandler))
+	mux.HandleFunc("/fix-conflicts", s.auth(s.fixConflictsHandler))
 	mux.HandleFunc("/shutdown", s.auth(s.shutdownHandler))
 	return mux
 }
@@ -181,6 +185,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.opts.UpdateAvailable != nil {
 		status.UpdateAvailable = s.opts.UpdateAvailable()
+	}
+	if s.opts.Conflicts != nil {
+		status.Conflicts = s.opts.Conflicts()
 	}
 	if s.opts.Hop != nil {
 		status.Hop = s.opts.Hop.Stats()
@@ -246,6 +253,29 @@ func (s *Server) runHop(w http.ResponseWriter, r *http.Request, ev event, reason
 		Reason:  reason,
 		Attempt: ev.Attempt,
 	}))
+}
+
+func (s *Server) fixConflictsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.opts.OnFixConflicts == nil {
+		writeJSON(w, map[string]any{"ok": false, "actions": []string{}, "remaining": []string{}})
+		return
+	}
+	actions, remaining := s.opts.OnFixConflicts(r.Context())
+	if actions == nil {
+		actions = []string{}
+	}
+	if remaining == nil {
+		remaining = []string{}
+	}
+	writeJSON(w, map[string]any{
+		"ok":        len(remaining) == 0,
+		"actions":   actions,
+		"remaining": remaining,
+	})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) error {

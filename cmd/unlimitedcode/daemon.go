@@ -7,12 +7,15 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"unlimitedcode/internal/config"
 	"unlimitedcode/internal/control"
+	"unlimitedcode/internal/doctor"
 	"unlimitedcode/internal/logx"
 	"unlimitedcode/internal/masque"
 	"unlimitedcode/internal/proxy"
@@ -178,17 +181,53 @@ func cmdDaemon(args []string) {
 		}
 	}()
 
+	var (
+		conflictsMu     sync.RWMutex
+		activeConflicts []string
+	)
+	go func() {
+		cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
+		defer ccancel()
+		found := doctor.DetectActiveConflicts(cctx)
+		if len(found) > 0 {
+			conflictsMu.Lock()
+			activeConflicts = found
+			conflictsMu.Unlock()
+			logger.Printf("conflicts detected: %s", strings.Join(found, "; "))
+		}
+	}()
+
 	controlOpts := control.Options{
 		Listen:          cfg.Control,
 		Token:           token,
 		Version:         version,
 		UpdateAvailable: func() string { return availableUpdate.Load().(string) },
-		StartedAt:       started,
-		ProxyListen:     cfg.Listen,
-		Egress:          control.Egress{Mode: cfg.Egress.Mode, Upstream: cfg.UpstreamName()},
-		Stats:           p.Stats,
-		OnShutdown:      cancel,
-		Logger:          logger,
+		Conflicts: func() []string {
+			conflictsMu.RLock()
+			defer conflictsMu.RUnlock()
+			if len(activeConflicts) == 0 {
+				return nil
+			}
+			cp := make([]string, len(activeConflicts))
+			copy(cp, activeConflicts)
+			return cp
+		},
+		OnFixConflicts: func(rctx context.Context) ([]string, []string) {
+			actions, remaining := doctor.ResolveActiveConflicts(rctx)
+			conflictsMu.Lock()
+			activeConflicts = remaining
+			conflictsMu.Unlock()
+			if len(actions) > 0 {
+				logger.Printf("conflicts resolved: %s", strings.Join(actions, "; "))
+			}
+			return actions, remaining
+		},
+		StartedAt:   started,
+		ProxyListen: cfg.Listen,
+		Egress:      control.Egress{Mode: cfg.Egress.Mode, Upstream: cfg.UpstreamName()},
+		Stats:       p.Stats,
+		OnShutdown:  cancel,
+		Logger:      logger,
 	}
 	if rotManager != nil {
 		controlOpts.Hop = rotManager

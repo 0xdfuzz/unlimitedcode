@@ -385,6 +385,7 @@ const StatusSchema = Schema.Struct({
   version: Schema.String,
   updateTag: Schema.String,
   promptUpdate: Schema.Boolean,
+  conflicts: Schema.Array(Schema.String),
   ip: Schema.String,
   ready: Schema.Number,
   total: Schema.Number,
@@ -412,6 +413,7 @@ const UnlimitedIpc = sdk.Ipc.define({
     restart: { output: StatusSchema },
     applyUpdate: { output: UpdateResultSchema },
     skipUpdate: { output: Schema.Boolean },
+    fixConflicts: { output: UpdateResultSchema },
     stats: { output: Schema.String },
   },
 })
@@ -429,6 +431,7 @@ async function fetchSummary() {
       version: "",
       updateTag: "",
       promptUpdate: false,
+      conflicts: [],
       ip: "offline",
       ready: 0,
       total: 0,
@@ -451,11 +454,13 @@ async function fetchSummary() {
   const updateTag = String(st.update_available || "")
   lastSeenUpdateTag = updateTag
   const promptUpdate = Boolean(updateTag && updateTag !== readSkippedVersion())
+  const conflicts = Array.isArray(st.conflicts) ? st.conflicts.map(String) : []
   return {
     online: true,
     version,
     updateTag,
     promptUpdate,
+    conflicts,
     ip: shortenIPv6(st.pool?.active_ip || "?"),
     ready,
     total: slots.length,
@@ -879,6 +884,74 @@ function buildUpdatePromptElement(currentVersion, tag, dialog, actions) {
   return root
 }
 
+function buildConflictPromptElement(conflicts, dialog, actions) {
+  const root = document.createElement("div")
+  root.tabIndex = -1
+  root.style.cssText = [
+    "pointer-events:auto",
+    "background:var(--surface-raised-stronger-non-alpha,var(--background-base,#141417))",
+    "border:1px solid var(--border-weak-base,rgba(255,255,255,0.12))",
+    "border-radius:12px",
+    "box-shadow:0 24px 64px rgba(0,0,0,0.65)",
+    "padding:20px 24px",
+    "width:440px",
+    "max-width:calc(100vw - 48px)",
+    "font-family:var(--font-sans,system-ui,sans-serif)",
+    "font-size:13px",
+    "color:var(--text-base,#d4d4d8)",
+    "display:flex",
+    "flex-direction:column",
+    "gap:14px",
+    "outline:none",
+  ].join(";")
+  root.addEventListener("click", (e) => e.stopPropagation())
+
+  const title = document.createElement("div")
+  title.style.cssText = "font-weight:600;font-size:14px;color:var(--text-strong,#fff);"
+  title.textContent = "Conflicting proxy detected"
+  root.appendChild(title)
+
+  const body = document.createElement("div")
+  body.style.cssText = "color:var(--text-weak,rgba(255,255,255,0.72));line-height:1.5;"
+  const list = Array.isArray(conflicts) && conflicts.length > 0 ? conflicts.join("; ") : "Cloudflare WARP / another OpenCode proxy tool"
+  body.textContent = `${list}. UnlimitedCode already includes built-in WARP MASQUE — keeping another WARP or OpenCode proxy active can cause 502 errors or limit blocks. Disconnect them now?`
+  root.appendChild(body)
+
+  const mkBtn = (label, primary, onClick) => {
+    const b = document.createElement("button")
+    b.type = "button"
+    b.textContent = label
+    b.style.cssText = [
+      "border-radius:6px",
+      "padding:6px 12px",
+      "cursor:pointer",
+      "font:inherit",
+      "font-size:12.5px",
+      "outline:none",
+      primary
+        ? "background:var(--surface-raised-base-hover,rgba(255,255,255,0.14));border:1px solid var(--icon-warning-base,#fbbf24);color:var(--text-strong,#fff);font-weight:600;"
+        : "background:transparent;border:1px solid var(--border-weak-base,rgba(255,255,255,0.14));color:var(--text-weak,rgba(255,255,255,0.7));",
+    ].join(";")
+    b.onclick = onClick
+    return b
+  }
+
+  const row = document.createElement("div")
+  row.style.cssText = "display:flex;justify-content:flex-end;gap:8px;padding-top:4px;"
+
+  const ignoreBtn = mkBtn("Ignore", false, () => dialog.close())
+  const fixBtn = mkBtn("Disconnect & Fix", true, async () => {
+    fixBtn.textContent = "Fixing…"
+    fixBtn.disabled = true
+    await actions.fix()
+    dialog.close()
+  })
+  row.appendChild(ignoreBtn)
+  row.appendChild(fixBtn)
+  root.appendChild(row)
+  return root
+}
+
 exports.default = sdk.Plugin.define({
   main(ctx) {
     ctx.provide(UnlimitedIpc, {
@@ -911,6 +984,24 @@ exports.default = sdk.Plugin.define({
         if (lastSeenUpdateTag) writeSkippedVersion(lastSeenUpdateTag)
         return true
       },
+      async fixConflicts() {
+        const res = await controlCall("/fix-conflicts", "POST", {}, 10000)
+        if (!res) {
+          return { ok: false, message: "Could not reach daemon to resolve conflicts." }
+        }
+        const actions = Array.isArray(res.actions) ? res.actions : []
+        const remaining = Array.isArray(res.remaining) ? res.remaining : []
+        if (remaining.length === 0) {
+          return {
+            ok: true,
+            message: actions.length > 0 ? actions.join("; ") : "No active conflicts remaining.",
+          }
+        }
+        return {
+          ok: false,
+          message: `Still active: ${remaining.join("; ")}. Close or uninstall them manually.`,
+        }
+      },
       async stats() {
         return computeStatsJSON()
       },
@@ -922,6 +1013,7 @@ exports.default = sdk.Plugin.define({
       version: "",
       updateTag: "",
       promptUpdate: false,
+      conflicts: [],
       ip: "…",
       ready: 0,
       total: 0,
@@ -930,6 +1022,7 @@ exports.default = sdk.Plugin.define({
       slots: [],
     })
     let promptedUpdate = false
+    let promptedConflict = false
 
     const refresh = async () => {
       try {
@@ -941,8 +1034,35 @@ exports.default = sdk.Plugin.define({
       }
     }
 
+    const runFixConflicts = async () => {
+      try {
+        const res = await ctx.main(UnlimitedIpc).fixConflicts()
+        ctx.toasts.show({
+          title: "UnlimitedCode",
+          description: res?.message || "Conflict check finished.",
+          variant: res?.ok ? "success" : "error",
+          duration: 5000,
+        })
+        return await refresh()
+      } catch {
+        return null
+      }
+    }
+
+    const maybePromptConflict = (st) => {
+      const list = Array.isArray(st?.conflicts) ? st.conflicts : []
+      if (promptedConflict || list.length === 0) return false
+      promptedConflict = true
+      ctx.dialogs.open((dialog) =>
+        buildConflictPromptElement(list, dialog, {
+          fix: runFixConflicts,
+        }),
+      )
+      return true
+    }
+
     const maybePromptUpdate = (st) => {
-      if (promptedUpdate || !st?.promptUpdate || !st?.updateTag) return
+      if (promptedUpdate || !st?.promptUpdate || !st?.updateTag) return false
       promptedUpdate = true
       ctx.dialogs.open((dialog) =>
         buildUpdatePromptElement(st.version, st.updateTag, dialog, {
@@ -952,19 +1072,19 @@ exports.default = sdk.Plugin.define({
           },
         }),
       )
+      return true
     }
 
     onMount(() => {
       let followup
       void (async () => {
         const st = await refresh()
-        if (st?.promptUpdate) {
-          maybePromptUpdate(st)
-        } else {
-          // Wait briefly for the daemon's one-shot startup check; never poll or interrupt mid-session.
+        const shown = maybePromptConflict(st) || maybePromptUpdate(st)
+        if (!shown) {
+          // Wait briefly for the daemon's one-shot startup checks; never poll or interrupt mid-session.
           followup = setTimeout(() => {
             void refresh().then((next) => {
-              if (next?.promptUpdate) maybePromptUpdate(next)
+              if (!maybePromptConflict(next)) maybePromptUpdate(next)
             })
           }, 2500)
         }
