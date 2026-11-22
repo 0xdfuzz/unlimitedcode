@@ -264,3 +264,37 @@ func TestKickRecoveryWakesSleepingSlotImmediately(t *testing.T) {
 	}
 	t.Fatalf("KickRecovery did not revive failed slots promptly (readyCalled=%v)", readyCalled.Load())
 }
+
+func TestIsPrefixInUseByOther(t *testing.T) {
+	pool, err := NewPool(Options{
+		StateDir: t.TempDir(),
+		Size:     2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	pool.slots[0].mu.Lock()
+	pool.slots[0].state = "recycling"
+	pool.slots[0].prefix = "2a09:bac5:b91:1c8c::/64"
+	pool.slots[0].mu.Unlock()
+
+	pool.slots[1].mu.Lock()
+	pool.slots[1].state = "ready"
+	pool.slots[1].prefix = "2a09:bac1:1140:db8::/64"
+	pool.slots[1].mu.Unlock()
+
+	if !pool.isPrefixInUseByOther(0, "2a09:bac1:1140:db8::/64") {
+		t.Fatal("expected slot 0 to detect slot 1's active /64 prefix as in use")
+	}
+	if pool.isPrefixInUseByOther(1, "2a09:bac1:1140:db8::/64") {
+		t.Fatal("slot 1 must not treat its own prefix as in use by another slot")
+	}
+	if pool.isPrefixInUseByOther(0, "2a09:bac5:b92:9999::/64") {
+		t.Fatal("unexpected collision for unused prefix")
+	}
+	if pool.isPrefixInUseByOther(1, "2a09:bac5:b91:1c8c::/64") {
+		t.Fatal("non-ready slot prefix should not count as in use")
+	}
+}

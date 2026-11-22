@@ -37,18 +37,44 @@ var conflictingServicePorts = []string{
 	":8118",
 }
 
-// DetectActiveConflicts checks for currently running tools or active proxy
-// configs that interfere with UnlimitedCode's embedded MASQUE egress (e.g.
-// Cloudflare WARP in VPN/proxy mode causing WARP-in-WARP 502s, or another
-// OpenCode proxy/bypass tool listening on loopback or active in config).
-// Safe, read-only, and fast (~150ms when idle).
+const (
+	// ConflictWARPConnected is reported when Cloudflare WARP's tunnel/VPN mode is
+	// actively blocking UnlimitedCode's embedded MASQUE egress.
+	ConflictWARPConnected = "Cloudflare WARP is connected"
+	// ConflictOtherBypassActive is reported when another OpenCode proxy/bypass
+	// tool or hijacked service.json is competing with UnlimitedCode.
+	ConflictOtherBypassActive = "Another OpenCode proxy/bypass tool is active"
+)
+
+// DetectProxyConflicts checks strictly for competing OpenCode proxy/bypass
+// tools, active configs, or hijacked service.json entries. Unlike WARP tunnel
+// mode (which may coexist cleanly on consumer setups), these directly fight
+// UnlimitedCode for OpenCode traffic and should always be surfaced.
+func DetectProxyConflicts(expectedProxy string) []string {
+	if isOtherBypassActive(expectedProxy) {
+		return []string{ConflictOtherBypassActive}
+	}
+	return nil
+}
+
+// DetectWARPConflict reports whether Cloudflare WARP is connected in a tunnel
+// or VPN mode that can intercept UnlimitedCode's MASQUE UDP traffic. Local-only
+// WarpProxy mode (:40000) does not capture system UDP routes and is ignored
+// unless OpenCode's service.json was hijacked to :40000 (handled by
+// DetectProxyConflicts).
+func DetectWARPConflict(ctx context.Context) bool {
+	return isWARPTunnelActive(ctx)
+}
+
+// DetectActiveConflicts checks for both active WARP tunnel mode and competing
+// OpenCode proxy/bypass tools. Safe, read-only, and fast (~150ms when idle).
 func DetectActiveConflicts(ctx context.Context, expectedProxy string) []string {
 	var out []string
-	if isWARPActive(ctx) {
-		out = append(out, "Cloudflare WARP is connected")
+	if isWARPTunnelActive(ctx) {
+		out = append(out, ConflictWARPConnected)
 	}
 	if isOtherBypassActive(expectedProxy) {
-		out = append(out, "Another OpenCode proxy/bypass tool is active")
+		out = append(out, ConflictOtherBypassActive)
 	}
 	return out
 }
@@ -57,7 +83,7 @@ func DetectActiveConflicts(ctx context.Context, expectedProxy string) []string {
 // warp-cli without elevation), disables conflicting user-level OpenCode proxy
 // configs/tasks/processes, and restores OpenCode's service.json when hijacked.
 func ResolveActiveConflicts(ctx context.Context, expectedProxy string) (actions []string, remaining []string) {
-	if isWARPActive(ctx) {
+	if isWARPConnected(ctx) {
 		if warpCLI := findWARPCLI(); warpCLI != "" {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			cmd := exec.CommandContext(cctx, warpCLI, "disconnect")
@@ -88,10 +114,7 @@ func ResolveActiveConflicts(ctx context.Context, expectedProxy string) (actions 
 	return actions, DetectActiveConflicts(ctx, expectedProxy)
 }
 
-func isWARPActive(ctx context.Context) bool {
-	if tcpListening("127.0.0.1:40000") {
-		return true
-	}
+func isWARPConnected(ctx context.Context) bool {
 	warpCLI := findWARPCLI()
 	if warpCLI == "" {
 		return false
@@ -109,6 +132,37 @@ func isWARPActive(ctx context.Context) bool {
 		return false
 	}
 	return strings.Contains(low, "connected") || strings.Contains(low, "connecting")
+}
+
+func isWARPTunnelActive(ctx context.Context) bool {
+	if !isWARPConnected(ctx) {
+		return false
+	}
+	// If WARP is in local-only WarpProxy mode (SOCKS/HTTP proxy on :40000),
+	// it does not install a system TUN route and cannot block MASQUE UDP 443.
+	warpCLI := findWARPCLI()
+	if warpCLI == "" {
+		return true
+	}
+	cctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, warpCLI, "settings")
+	hideWindow(cmd)
+	raw, err := cmd.Output()
+	if err != nil {
+		return true
+	}
+	return !isWarpProxySettings(string(raw))
+}
+
+func isWarpProxySettings(settingsOutput string) bool {
+	for _, line := range strings.Split(settingsOutput, "\n") {
+		low := strings.ToLower(strings.TrimSpace(line))
+		if strings.Contains(low, "mode:") && strings.Contains(low, "warpproxy") {
+			return true
+		}
+	}
+	return false
 }
 
 func findWARPCLI() string {

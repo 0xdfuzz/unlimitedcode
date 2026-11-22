@@ -48,11 +48,12 @@ type Logger interface {
 }
 
 type Options struct {
-	StateDir    string
-	Size        int
-	DialTimeout time.Duration
-	Logger      Logger
-	OnSlotReady func()
+	StateDir      string
+	Size          int
+	DialTimeout   time.Duration
+	Logger        Logger
+	OnSlotReady   func()
+	OnDialFailure func()
 }
 
 type SlotStatus struct {
@@ -98,12 +99,13 @@ type aaaaEntry struct {
 }
 
 type Pool struct {
-	stateDir    string
-	size        int
-	timeout     time.Duration
-	log         Logger
-	onSlotReady func()
-	recycleFn   func(ctx context.Context, s *slot, avoidPrefix string) error
+	stateDir      string
+	size          int
+	timeout       time.Duration
+	log           Logger
+	onSlotReady   func()
+	onDialFailure func()
+	recycleFn     func(ctx context.Context, s *slot, avoidPrefix string) error
 
 	burntIOMu   sync.Mutex
 	mu          sync.Mutex
@@ -141,16 +143,17 @@ func NewPool(opts Options) (*Pool, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pool{
-		stateDir:    opts.StateDir,
-		size:        opts.Size,
-		timeout:     opts.DialTimeout,
-		log:         logger,
-		onSlotReady: opts.OnSlotReady,
-		burnt:       make(map[string]time.Time),
-		aaaaCache:   make(map[string]aaaaEntry),
-		recoverKick: make(chan struct{}),
-		ctx:         ctx,
-		cancel:      cancel,
+		stateDir:      opts.StateDir,
+		size:          opts.Size,
+		timeout:       opts.DialTimeout,
+		log:           logger,
+		onSlotReady:   opts.OnSlotReady,
+		onDialFailure: opts.OnDialFailure,
+		burnt:         make(map[string]time.Time),
+		aaaaCache:     make(map[string]aaaaEntry),
+		recoverKick:   make(chan struct{}),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 
 	p.loadBurnt()
@@ -316,7 +319,17 @@ func (p *Pool) DialContext(ctx context.Context, network, addr string) (net.Conn,
 		p.active = alt.id
 		p.mu.Unlock()
 		p.log.Printf("masque active slot=%d dial failed (%v), failing over to slot=%d", s.id, err, alt.id)
-		return p.dialSlot(ctx, alt, target)
+		conn, altErr := p.dialSlot(ctx, alt, target)
+		if altErr == nil {
+			return conn, nil
+		}
+		if ctx.Err() == nil && p.onDialFailure != nil {
+			p.onDialFailure()
+		}
+		return nil, altErr
+	}
+	if ctx.Err() == nil && p.onDialFailure != nil {
+		p.onDialFailure()
 	}
 	return nil, err
 }
@@ -590,6 +603,26 @@ func (p *Pool) pickOtherReady(excludeID int) *slot {
 	return nil
 }
 
+// isPrefixInUseByOther reports whether any other ready slot currently holds
+// prefix, so a recycled spare never parks on the same /64 as the active slot.
+func (p *Pool) isPrefixInUseByOther(excludeID int, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	for _, s := range p.slots {
+		if s.id == excludeID {
+			continue
+		}
+		s.mu.Lock()
+		match := s.state == "ready" && s.prefix == prefix
+		s.mu.Unlock()
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Pool) bootSlot(ctx context.Context, s *slot) error {
 	cfg, err := loadSlotConfig(s.configPath)
 	if err != nil {
@@ -618,7 +651,7 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 	defer s.recycleMu.Unlock()
 
 	s.mu.Lock()
-	if s.state == "ready" && s.prefix != "" && s.prefix != avoidPrefix && !p.isBurnt(s.prefix) {
+	if s.state == "ready" && s.prefix != "" && s.prefix != avoidPrefix && !p.isPrefixInUseByOther(s.id, s.prefix) && !p.isBurnt(s.prefix) {
 		// Another goroutine already recycled this slot to a fresh /64 while we waited.
 		s.mu.Unlock()
 		return nil
@@ -696,7 +729,7 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 
 		gotIP := trace["ip"]
 		gotPrefix := NormalizePrefix(gotIP)
-		if (gotPrefix != avoidPrefix && !p.isBurnt(gotPrefix)) || attempt == maxRecycleTries {
+		if (gotPrefix != avoidPrefix && !p.isPrefixInUseByOther(s.id, gotPrefix) && !p.isBurnt(gotPrefix)) || attempt == maxRecycleTries {
 			if err := saveSlotConfig(s.configPath, nextCfg); err != nil {
 				p.log.Printf("masque slot=%d recycle try=%d save error: %v", s.id, attempt, err)
 			}

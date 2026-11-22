@@ -94,3 +94,39 @@ func TestHijackedServiceProxyDetection(t *testing.T) {
 		})
 	}
 }
+
+func TestIsWarpProxySettings(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "warp proxy mode",
+			output: "(user set)\tMode: WarpProxy on port 40000\n(consumer overrides)\tWARP tunnel protocol: MASQUE\n",
+			want:   true,
+		},
+		{
+			name:   "full warp vpn mode",
+			output: "(default)\tMode: Warp\n(consumer overrides)\tWARP tunnel protocol: MASQUE\n",
+			want:   false,
+		},
+		{
+			name:   "warp with doh mode",
+			output: "(user set)\tMode: WarpWithDnsOverHttps\n",
+			want:   false,
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isWarpProxySettings(tc.output); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
