@@ -30,6 +30,13 @@ type Reconnector interface {
 	Reconnect(ctx context.Context) error
 }
 
+// ReasonReconnector is an optional extension of Reconnector that receives the
+// hop reason so the pool only blacklists a prefix on real quota limits.
+type ReasonReconnector interface {
+	Reconnector
+	ReconnectWithReason(ctx context.Context, reason string) error
+}
+
 type Logger interface {
 	Printf(format string, args ...any)
 }
@@ -312,7 +319,12 @@ func (m *Manager) execute(req Request) Result {
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.opts.Timeout)
 	defer cancel()
-	err := m.rec.Reconnect(ctx)
+	var err error
+	if rr, ok := m.rec.(ReasonReconnector); ok {
+		err = rr.ReconnectWithReason(ctx, req.Reason)
+	} else {
+		err = m.rec.Reconnect(ctx)
+	}
 	duration := m.now().Sub(start)
 	if err != nil {
 		m.log.Printf("hop failed dur=%s: %v", duration.Round(time.Millisecond), err)

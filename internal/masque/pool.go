@@ -339,15 +339,25 @@ func (p *Pool) dialSlot(ctx context.Context, s *slot, target string) (net.Conn, 
 	return client.DialContext(ctx, target)
 }
 
-// Reconnect implements hop.Reconnector.
+// Reconnect implements rotate.Reconnector.
 func (p *Pool) Reconnect(ctx context.Context) error {
+	return p.reconnect(ctx, true)
+}
+
+// ReconnectWithReason implements rotate.ReasonReconnector so only real
+// provider.free-limit rotations blacklist the old /64 prefix.
+func (p *Pool) ReconnectWithReason(ctx context.Context, reason string) error {
+	return p.reconnect(ctx, reason == "provider.free-limit")
+}
+
+func (p *Pool) reconnect(ctx context.Context, burn bool) error {
 	old := p.activeSlot()
 	old.mu.Lock()
 	oldPrefix := old.prefix
 	oldIP := old.ip
 	old.mu.Unlock()
 
-	if oldPrefix != "" {
+	if burn && oldPrefix != "" {
 		p.markBurnt(oldPrefix)
 	}
 

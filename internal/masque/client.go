@@ -278,23 +278,52 @@ var directTransport = &http.Transport{
 	IdleConnTimeout: 30 * time.Second,
 }
 
+var (
+	cfDNSMu    sync.Mutex
+	cfDNSCache = map[string]string{}
+)
+
+func cacheResolvedHost(host, ip string) {
+	if host == "" || ip == "" {
+		return
+	}
+	cfDNSMu.Lock()
+	cfDNSCache[strings.ToLower(host)] = ip
+	cfDNSMu.Unlock()
+}
+
+func cachedHostIP(host string) string {
+	cfDNSMu.Lock()
+	ip := cfDNSCache[strings.ToLower(host)]
+	cfDNSMu.Unlock()
+	return ip
+}
+
 func dialWithDoHFallback(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, splitErr := net.SplitHostPort(addr)
 	conn, err := directDialer.DialContext(ctx, network, addr)
 	if err == nil {
+		if splitErr == nil {
+			if _, parseErr := netip.ParseAddr(host); parseErr != nil {
+				if ta, ok := conn.RemoteAddr().(*net.TCPAddr); ok && ta.IP != nil {
+					cacheResolvedHost(host, ta.IP.String())
+				}
+			}
+		}
 		return conn, nil
 	}
 	var dnsErr *net.DNSError
-	if !errors.As(err, &dnsErr) {
-		return nil, err
-	}
-	host, port, splitErr := net.SplitHostPort(addr)
-	if splitErr != nil {
+	if !errors.As(err, &dnsErr) || splitErr != nil {
 		return nil, err
 	}
 	if _, parseErr := netip.ParseAddr(host); parseErr == nil {
 		return nil, err
 	}
 	if ip := lookupViaDoHIP(ctx, host); ip != "" {
+		cacheResolvedHost(host, ip)
+		return directDialer.DialContext(ctx, network, net.JoinHostPort(ip, port))
+	}
+	if ip := cachedHostIP(host); ip != "" {
 		return directDialer.DialContext(ctx, network, net.JoinHostPort(ip, port))
 	}
 	return nil, err
