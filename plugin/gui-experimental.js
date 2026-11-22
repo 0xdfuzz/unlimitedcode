@@ -157,6 +157,35 @@ function computeStreakDays(dayKeys) {
   return streak
 }
 
+let cachedSinceMs = -1
+let cachedCutoffMs = 0
+let cachedTurns = []
+
+function parseFreeTurn(row) {
+  let parsed
+  try {
+    parsed = JSON.parse(row.data)
+  } catch {
+    return null
+  }
+  const usage = parsed?.usage || parsed?.tokens
+  if (!usage) return null
+  const inp = Number(usage.input ?? usage.inputTokens ?? usage.promptTokens ?? 0)
+  const out =
+    Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0) +
+    Number(usage.reasoning ?? usage.reasoningTokens ?? 0)
+  const cache = Number(usage.cache?.read ?? usage.cacheRead ?? usage.cachedInputTokens ?? 0)
+  if (inp + out + cache <= 0) return null
+
+  const mid = String(parsed?.model?.id || parsed?.modelID || "unknown")
+  if (!isOpenCodeFree(parsed, mid)) return null
+
+  const genStart = Number(parsed?.time?.firstToken || parsed?.time?.created || 0)
+  const genEnd = Number(parsed?.time?.streamed || parsed?.time?.completed || 0)
+  const sec = out > 0 && genEnd > genStart && genEnd - genStart < 300_000 ? (genEnd - genStart) / 1000 : 0
+  return { t: Number(row.time_created), inp, out, cache, mid, sec }
+}
+
 function computeStatsJSON() {
   const sinceMs = installedSinceMs()
   const sinceLabel = fmtSinceDate(sinceMs)
@@ -175,9 +204,28 @@ function computeStatsJSON() {
       const dayAgo = now - 86_400_000
       const weekAgo = now - 7 * 86_400_000
       const monthAgo = now - 30 * 86_400_000
+
+      if (cachedSinceMs !== sinceMs || cachedCutoffMs < sinceMs) {
+        cachedSinceMs = sinceMs
+        cachedCutoffMs = sinceMs
+        cachedTurns = []
+      }
+      const nextCutoffMs = Math.max(cachedCutoffMs, now - 120_000)
       const rows = db
         .prepare("SELECT time_created, data FROM session_message WHERE type = 'assistant' AND time_created >= ?")
-        .all(sinceMs)
+        .all(cachedCutoffMs)
+
+      const liveTail = []
+      for (const row of rows) {
+        const turn = parseFreeTurn(row)
+        if (!turn) continue
+        if (turn.t < nextCutoffMs) {
+          cachedTurns.push(turn)
+        } else {
+          liveTail.push(turn)
+        }
+      }
+      cachedCutoffMs = nextCutoffMs
 
       const acc = {
         b: {
@@ -198,35 +246,14 @@ function computeStatsJSON() {
         speedSec: 0,
       }
 
-      for (const row of rows) {
-        let parsed
-        try {
-          parsed = JSON.parse(row.data)
-        } catch {
-          continue
-        }
-        const usage = parsed?.usage || parsed?.tokens
-        if (!usage) continue
-        const inp = Number(usage.input ?? usage.inputTokens ?? usage.promptTokens ?? 0)
-        const out =
-          Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0) +
-          Number(usage.reasoning ?? usage.reasoningTokens ?? 0)
-        const cache = Number(usage.cache?.read ?? usage.cacheRead ?? usage.cachedInputTokens ?? 0)
-        if (inp + out + cache <= 0) continue
-
-        const mid = String(parsed?.model?.id || parsed?.modelID || "unknown")
-        if (!isOpenCodeFree(parsed, mid)) continue
-
+      const foldTurn = (turn) => {
+        const { t, inp, out, cache, mid, sec } = turn
         const wins = ["All"]
-        if (row.time_created >= monthAgo) wins.push("30d")
-        if (row.time_created >= weekAgo) wins.push("7d")
-        if (row.time_created >= dayAgo) wins.push("24h")
+        if (t >= monthAgo) wins.push("30d")
+        if (t >= weekAgo) wins.push("7d")
+        if (t >= dayAgo) wins.push("24h")
 
-        const dt = new Date(row.time_created)
-        const genStart = Number(parsed?.time?.firstToken || parsed?.time?.created || 0)
-        const genEnd = Number(parsed?.time?.streamed || parsed?.time?.completed || 0)
-        const sec =
-          out > 0 && genEnd > genStart && genEnd - genStart < 300_000 ? (genEnd - genStart) / 1000 : 0
+        const dt = new Date(t)
         const tot = inp + out + cache
 
         for (const w of wins) {
@@ -253,6 +280,9 @@ function computeStatsJSON() {
           acc.speedSec += sec
         }
       }
+
+      for (let i = 0; i < cachedTurns.length; i++) foldTurn(cachedTurns[i])
+      for (let i = 0; i < liveTail.length; i++) foldTurn(liveTail[i])
 
       if (acc.b.All.turns === 0) {
         return JSON.stringify({

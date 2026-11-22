@@ -255,5 +255,8 @@ func cmdDaemon(args []string) {
 	defer cancel()
 	p.Close(shutdownCtx)
 	c.Close(shutdownCtx)
+	if rotManager != nil {
+		rotManager.Flush()
+	}
 	logger.Printf("UnlimitedCode stopped")
 }

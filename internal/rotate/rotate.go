@@ -84,6 +84,8 @@ type Manager struct {
 	opts          Options
 	log           Logger
 	now           func() time.Time
+	ioMu          sync.Mutex
+	wg            sync.WaitGroup
 	mu            sync.Mutex
 	run           *call
 	epoch         int64
@@ -172,8 +174,33 @@ func (m *Manager) saveState(count int64) {
 	if err != nil {
 		return
 	}
+	m.ioMu.Lock()
+	defer m.ioMu.Unlock()
 	_ = os.MkdirAll(filepath.Dir(m.opts.StatePath), 0o700)
 	_ = os.WriteFile(m.opts.StatePath, append(raw, '\n'), 0o600)
+}
+
+func (m *Manager) saveStateAsync(count int64) {
+	if m.opts.StatePath == "" {
+		return
+	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.saveState(count)
+	}()
+}
+
+// Flush waits for any in-flight background state writes and persists the final
+// rotation counter to disk on daemon shutdown.
+func (m *Manager) Flush() {
+	m.wg.Wait()
+	m.mu.Lock()
+	count := m.stats.Count
+	m.mu.Unlock()
+	if count > 0 {
+		m.saveState(count)
+	}
 }
 
 // Hop runs one egress change or waits for the one already running. The
@@ -261,7 +288,7 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 	close(running.done)
 	savedCount := m.stats.Count
 	m.mu.Unlock()
-	m.saveState(savedCount)
+	m.saveStateAsync(savedCount)
 
 	return result
 }

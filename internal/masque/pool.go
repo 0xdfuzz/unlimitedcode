@@ -275,6 +275,10 @@ func (p *Pool) Close() {
 		return
 	}
 	p.closed = true
+	snapshot := make(map[string]int64, len(p.burnt))
+	for k, exp := range p.burnt {
+		snapshot[k] = exp.Unix()
+	}
 	p.mu.Unlock()
 
 	p.cancel()
@@ -282,6 +286,9 @@ func (p *Pool) Close() {
 		p.closeSlotClient(s)
 	}
 	p.wg.Wait()
+	if len(snapshot) > 0 {
+		p.saveBurntSnapshot(snapshot)
+	}
 	directTransport.CloseIdleConnections()
 	dohIPTransport.CloseIdleConnections()
 }
@@ -1119,12 +1126,20 @@ func (p *Pool) markBurnt(prefix string) {
 		}
 	}
 	p.burnt[prefix] = expiry
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	snapshot := make(map[string]int64, len(p.burnt))
 	for k, exp := range p.burnt {
 		snapshot[k] = exp.Unix()
 	}
+	p.wg.Add(1)
 	p.mu.Unlock()
-	p.saveBurntSnapshot(snapshot)
+	go func() {
+		defer p.wg.Done()
+		p.saveBurntSnapshot(snapshot)
+	}()
 }
 
 func (p *Pool) isBurnt(prefix string) bool {
