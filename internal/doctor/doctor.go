@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"time"
 
 	"unlimitedcode/internal/config"
@@ -111,7 +109,6 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 
 	checkRotate(cfg, add)
 	checkPlugin(add)
-	checkConflicts(ctx, cfg, add)
 
 	return checks
 }
@@ -222,45 +219,4 @@ func health(ctx context.Context, addr string) (string, error) {
 		return "", fmt.Errorf("health not ok")
 	}
 	return fmt.Sprintf("running %s at %s", payload.Version, addr), nil
-}
-
-func checkConflicts(ctx context.Context, cfg config.Config, add func(string, string, string)) {
-	found := DetectActiveConflicts(ctx, "http://"+cfg.Listen)
-
-	// Detect leftover state directories from third-party OpenCode bypass tools.
-	var dirs []string
-	if runtime.GOOS == "windows" {
-		if local := os.Getenv("LOCALAPPDATA"); local != "" {
-			dirs = append(dirs,
-				filepath.Join(local, "openhop"),
-				filepath.Join(local, "opencode-unlimited"),
-				filepath.Join(local, "opencode-infinite"),
-			)
-		}
-	} else if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs,
-			filepath.Join(home, ".local", "state", "openhop"),
-			filepath.Join(home, ".local", "state", "opencode-infinite"),
-		)
-	}
-	for _, p := range dirs {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
-			found = append(found, "leftover third-party proxy folder ("+p+")")
-		}
-	}
-
-	// Detect conflicting HTTPS_PROXY in current environment.
-	wantProxy := "http://" + cfg.Listen
-	for _, key := range []string{"HTTPS_PROXY", "https_proxy"} {
-		if val := strings.TrimSpace(os.Getenv(key)); val != "" && !strings.EqualFold(val, wantProxy) {
-			found = append(found, fmt.Sprintf("%s=%s (expected %s)", key, val, wantProxy))
-			break
-		}
-	}
-
-	if len(found) == 0 {
-		add("conflicts", OK, "none detected")
-		return
-	}
-	add("conflicts", Warn, strings.Join(found, "; ")+" — disconnect WARP / disable other OpenCode proxy tools and use official OpenCode")
 }

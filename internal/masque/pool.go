@@ -48,12 +48,11 @@ type Logger interface {
 }
 
 type Options struct {
-	StateDir      string
-	Size          int
-	DialTimeout   time.Duration
-	Logger        Logger
-	OnSlotReady   func()
-	OnDialFailure func()
+	StateDir    string
+	Size        int
+	DialTimeout time.Duration
+	Logger      Logger
+	OnSlotReady func()
 }
 
 type SlotStatus struct {
@@ -99,25 +98,25 @@ type aaaaEntry struct {
 }
 
 type Pool struct {
-	stateDir      string
-	size          int
-	timeout       time.Duration
-	log           Logger
-	onSlotReady   func()
-	onDialFailure func()
-	recycleFn     func(ctx context.Context, s *slot, avoidPrefix string) error
+	stateDir    string
+	size        int
+	timeout     time.Duration
+	log         Logger
+	onSlotReady func()
+	recycleFn   func(ctx context.Context, s *slot, avoidPrefix string) error
 
-	burntIOMu   sync.Mutex
-	mu          sync.Mutex
-	slots       []*slot
-	active      int
-	burnt       map[string]time.Time
-	aaaaCache   map[string]aaaaEntry
-	recoverKick chan struct{}
-	closed      bool
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	burntIOMu       sync.Mutex
+	mu              sync.Mutex
+	slots           []*slot
+	active          int
+	burnt           map[string]time.Time
+	aaaaCache       map[string]aaaaEntry
+	regBackoffUntil time.Time
+	recoverKick     chan struct{}
+	closed          bool
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
 }
 
 func NewPool(opts Options) (*Pool, error) {
@@ -143,17 +142,16 @@ func NewPool(opts Options) (*Pool, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pool{
-		stateDir:      opts.StateDir,
-		size:          opts.Size,
-		timeout:       opts.DialTimeout,
-		log:           logger,
-		onSlotReady:   opts.OnSlotReady,
-		onDialFailure: opts.OnDialFailure,
-		burnt:         make(map[string]time.Time),
-		aaaaCache:     make(map[string]aaaaEntry),
-		recoverKick:   make(chan struct{}),
-		ctx:           ctx,
-		cancel:        cancel,
+		stateDir:    opts.StateDir,
+		size:        opts.Size,
+		timeout:     opts.DialTimeout,
+		log:         logger,
+		onSlotReady: opts.OnSlotReady,
+		burnt:       make(map[string]time.Time),
+		aaaaCache:   make(map[string]aaaaEntry),
+		recoverKick: make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	p.loadBurnt()
@@ -319,17 +317,7 @@ func (p *Pool) DialContext(ctx context.Context, network, addr string) (net.Conn,
 		p.active = alt.id
 		p.mu.Unlock()
 		p.log.Printf("masque active slot=%d dial failed (%v), failing over to slot=%d", s.id, err, alt.id)
-		conn, altErr := p.dialSlot(ctx, alt, target)
-		if altErr == nil {
-			return conn, nil
-		}
-		if ctx.Err() == nil && p.onDialFailure != nil {
-			p.onDialFailure()
-		}
-		return nil, altErr
-	}
-	if ctx.Err() == nil && p.onDialFailure != nil {
-		p.onDialFailure()
+		return p.dialSlot(ctx, alt, target)
 	}
 	return nil, err
 }
@@ -658,11 +646,6 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 	}
 	s.state = "recycling"
 	prev := s.cfg
-	// If sibling sub-agents are still actively streaming on s.client, do not
-	// PATCH /reg/<prev.ID> (replacing the device's P-256 key can terminate
-	// in-flight QUIC streams on Cloudflare's edge); register a fresh device ID
-	// instead so active streams drain cleanly with zero ECONNRESET.
-	hasActiveStreams := s.client != nil && s.client.ActiveStreams() > 0
 	s.mu.Unlock()
 
 	var (
@@ -677,7 +660,7 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 		}
 	}()
 
-	enrollErr := hasActiveStreams
+	enrollErr := false
 	for attempt := 1; attempt <= maxRecycleTries; attempt++ {
 		if ctx.Err() != nil {
 			lastErr = ctx.Err()
@@ -686,17 +669,39 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 
 		var nextCfg slotConfig
 		var err error
-		// Prefer lightweight key re-enrollment (PATCH /reg/<id>) on the first two
-		// tries — it rotates the IPv6 /64 most of the time without hitting
-		// Cloudflare's stricter POST /reg rate limit (1015). Fall back to
-		// registering a brand-new WARP device on attempt >= 3 or if PATCH fails.
-		if attempt <= 2 && !enrollErr && prev.ID != "" && prev.AccessToken != "" {
+		p.mu.Lock()
+		inRegBackoff := time.Now().Before(p.regBackoffUntil)
+		p.mu.Unlock()
+		// Always prefer lightweight key re-enrollment (PATCH /reg/<id>) on the
+		// first two tries — and whenever POST /reg is in 429/1015 cooldown —
+		// because PATCH rotates the IPv6 /64 without hitting Cloudflare's
+		// stricter POST /reg WAF limit (1015), while already-established QUIC
+		// tunnels continue draining cleanly.
+		canPatch := !enrollErr && prev.ID != "" && prev.AccessToken != ""
+		if canPatch && (attempt <= 2 || inRegBackoff) {
 			nextCfg, err = enrollNewKey(ctx, prev)
 			if err != nil {
 				enrollErr = true
 			}
+		} else if inRegBackoff {
+			// Avoid hammering POST /reg while Cloudflare's 1015 window is active.
+			lastErr = errors.New("register device: cooling down after cloudflare 429/1015")
+			break
 		} else {
 			nextCfg, err = registerAndEnroll(ctx)
+			if err != nil && isRateLimitErr(err) {
+				p.mu.Lock()
+				p.regBackoffUntil = time.Now().Add(90 * time.Second)
+				p.mu.Unlock()
+				// If POST /reg is rate-limited on this IP, fall back to PATCH
+				// on the existing registered device if we haven't tried it yet.
+				if canPatch {
+					nextCfg, err = enrollNewKey(ctx, prev)
+					if err != nil {
+						enrollErr = true
+					}
+				}
+			}
 		}
 		if err != nil {
 			lastErr = err

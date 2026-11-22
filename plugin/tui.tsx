@@ -407,42 +407,6 @@ function writeSkippedVersion(tag: string): void {
   } catch {}
 }
 
-async function promptConflictDialog(context: any, conflicts: string[]): Promise<void> {
-  const detail = conflicts.join("; ")
-  const choice = await context.ui.dialog.select({
-    title: "Conflicting proxy detected",
-    placeholder: `${detail} — disconnect to prevent 502 / limit errors?`,
-    options: [
-      {
-        title: "Disconnect & Fix",
-        value: "fix",
-        description: "Disconnect Cloudflare WARP / stop conflicting OpenCode proxy tools",
-      },
-      {
-        title: "Ignore",
-        value: "ignore",
-        description: "Keep running as-is for this session",
-      },
-    ],
-  })
-  if (choice !== "fix") return
-  const res = await controlCall("/fix-conflicts", "POST", {}, 10_000)
-  const actions: string[] = Array.isArray(res?.actions) ? res.actions : []
-  const remaining: string[] = Array.isArray(res?.remaining) ? res.remaining : []
-  context.ui.toast.show({
-    title: "UnlimitedCode",
-    message:
-      res && remaining.length === 0
-        ? actions.length > 0
-          ? actions.join("; ")
-          : "Conflicts resolved."
-        : remaining.length > 0
-          ? `Still active: ${remaining.join("; ")}`
-          : "Could not reach daemon to fix conflicts.",
-    variant: res && remaining.length === 0 ? "success" : "error",
-  })
-}
-
 async function promptUpdateDialog(context: any, currentVersion: string, tag: string): Promise<void> {
   const choice = await context.ui.dialog.select({
     title: `UnlimitedCode update available (${tag})`,
@@ -958,32 +922,24 @@ function PromptBadge(props: {
     didInitialBoot = true
 
     let promptedUpdate = false
-    let promptedConflict = false
-    const checkStartupPrompts = async (st: any): Promise<boolean> => {
-      const conflicts: string[] = Array.isArray(st?.conflicts) ? st.conflicts.map(String) : []
-      if (!promptedConflict && conflicts.length > 0) {
-        promptedConflict = true
-        await promptConflictDialog(props.context, conflicts)
-        return true
-      }
-      if (promptedUpdate) return false
+    const checkUpdate = (st: any) => {
+      if (promptedUpdate) return
       const tag = String(st?.update_available || "")
-      if (!tag || tag === readSkippedVersion()) return false
+      if (!tag || tag === readSkippedVersion()) return
       promptedUpdate = true
-      await promptUpdateDialog(props.context, String(st.version || ""), tag)
-      return true
+      void promptUpdateDialog(props.context, String(st.version || ""), tag)
     }
     let followup: ReturnType<typeof setTimeout> | undefined
     void (async () => {
       const st = await refresh()
-      const shown = await checkStartupPrompts(st)
-      if (!shown) {
-        // Give the daemon's one-shot startup checks a brief moment to finish;
+      checkUpdate(st)
+      if (!promptedUpdate) {
+        // Give the daemon's one-shot startup check a brief moment to finish;
         // never poll or pop up a dialog mid-session afterwards.
         followup = setTimeout(() => {
           void controlCall("/status", "GET", undefined, 1_500).then((next) => {
             if (next) props.setState("auto")
-            if (next) void checkStartupPrompts(next)
+            if (next) checkUpdate(next)
           })
         }, 2_500)
       }
