@@ -138,20 +138,24 @@ func registerAndEnroll(ctx context.Context) (slotConfig, error) {
 	defer regMu.Unlock()
 
 	if gap := 500*time.Millisecond - time.Since(lastRegAt); gap > 0 {
+		timer := time.NewTimer(gap)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return slotConfig{}, ctx.Err()
-		case <-time.After(gap):
+		case <-timer.C:
 		}
 	}
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * 800 * time.Millisecond)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return slotConfig{}, ctx.Err()
-			case <-time.After(time.Duration(attempt) * 800 * time.Millisecond):
+			case <-timer.C:
 			}
 		}
 		cfg, err := registerAndEnrollOnce(ctx)
@@ -544,6 +548,11 @@ func (c *l4Client) DialContext(ctx context.Context, target string) (net.Conn, er
 	return nil, lastErr
 }
 
+func abortStream(s *http3.RequestStream) {
+	_ = s.Close()
+	s.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+}
+
 func (c *l4Client) dialOnce(ctx context.Context, target string) (net.Conn, error) {
 	h3, localAddr, err := c.ensureConn(ctx)
 	if err != nil {
@@ -556,18 +565,18 @@ func (c *l4Client) dialOnce(ctx context.Context, target string) (net.Conn, error
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+target, nil)
 	if err != nil {
-		_ = stream.Close()
+		abortStream(stream)
 		return nil, err
 	}
 	req.Host = target
 	if err := stream.SendRequestHeader(req); err != nil {
-		_ = stream.Close()
+		abortStream(stream)
 		c.resetConn(h3)
 		return nil, err
 	}
 	resp, err := stream.ReadResponse()
 	if err != nil {
-		_ = stream.Close()
+		abortStream(stream)
 		// A blackholed UDP socket (e.g. after toggling a system VPN or Wi-Fi)
 		// passes OpenRequestStream/SendRequestHeader in memory and only fails
 		// here when waiting for response headers. Reset the cached QUIC conn so
@@ -576,13 +585,13 @@ func (c *l4Client) dialOnce(ctx context.Context, target string) (net.Conn, error
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		_ = stream.Close()
+		abortStream(stream)
 		return nil, fmt.Errorf("MASQUE CONNECT %s rejected: HTTP %d", target, resp.StatusCode)
 	}
 	c.mu.Lock()
 	if c.closed || c.draining {
 		c.mu.Unlock()
-		_ = stream.Close()
+		abortStream(stream)
 		return nil, net.ErrClosed
 	}
 	c.activeStreams++

@@ -18,7 +18,14 @@ func stopOtherBypassProcesses(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	stopped := false
-	for _, pat := range []string{"zen_proxy.py", "warp_keeper.py", "zen_guard.py", "openhop"} {
+	for _, pat := range []string{
+		"zen_proxy.py",
+		"warp_keeper.py",
+		"zen_guard.py",
+		"openhop",
+		"opencode-infinite/tor",
+		"opencode-infinite/wireguard",
+	} {
 		if exec.CommandContext(cctx, "pkill", "-f", pat).Run() == nil {
 			stopped = true
 		}

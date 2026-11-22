@@ -254,3 +254,46 @@ func TestCloseTunnelsEndsActiveStream(t *testing.T) {
 		t.Fatal("expected closed tunnel")
 	}
 }
+
+type blockingDialer struct {
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (d *blockingDialer) Name() string { return "blocking" }
+func (d *blockingDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	close(d.started)
+	<-ctx.Done()
+	close(d.canceled)
+	return nil, ctx.Err()
+}
+
+func TestDialCanceledWhenClientDisconnects(t *testing.T) {
+	d := &blockingDialer{
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
+	_, addr := startProxy(t, d, []string{"127.0.0.1"}, []int{443})
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(conn, "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-d.started:
+	case <-time.After(time.Second):
+		t.Fatal("dial did not start")
+	}
+
+	// Disconnect client mid-dial; upstream dial context should cancel promptly.
+	conn.Close()
+	select {
+	case <-d.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream dial context was not canceled when client disconnected")
+	}
+}

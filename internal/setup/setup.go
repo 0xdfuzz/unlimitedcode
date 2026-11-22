@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,6 +11,8 @@ import (
 
 	"unlimitedcode/internal/config"
 )
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // EnsureConfig writes the default config when none exists. It never overwrites
 // an existing file, so a hand-edited config survives a repeated setup.
@@ -133,6 +136,7 @@ func SetOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 	for _, file := range files {
 		doc := map[string]any{}
 		if raw, err := os.ReadFile(file); err == nil && len(raw) > 0 {
+			raw = bytes.TrimPrefix(raw, utf8BOM)
 			if err := json.Unmarshal(raw, &doc); err != nil {
 				return updated, err
 			}
@@ -176,6 +180,7 @@ func ClearOpenCodeServiceEnv(proxyURL string) ([]string, error) {
 		if err != nil {
 			continue
 		}
+		raw = bytes.TrimPrefix(raw, utf8BOM)
 		doc := map[string]any{}
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			continue

@@ -104,7 +104,7 @@ func Run(ctx context.Context, cfg config.Config, version string) []Check {
 
 	for _, shim := range opencode.Shims() {
 		if opencode.IsOpenhopShim(shim) {
-			add("path", Warn, shim+" is an openhop shim; remove it from PATH so official OpenCode runs cleanly")
+			add("path", Warn, shim+" is a third-party OpenCode wrapper shim; remove it from PATH so official OpenCode runs cleanly")
 			break
 		}
 	}
@@ -225,7 +225,7 @@ func health(ctx context.Context, addr string) (string, error) {
 }
 
 func checkConflicts(ctx context.Context, cfg config.Config, add func(string, string, string)) {
-	found := DetectActiveConflicts(ctx)
+	found := DetectActiveConflicts(ctx, "http://"+cfg.Listen)
 
 	// Detect leftover state directories from third-party OpenCode bypass tools.
 	var dirs []string

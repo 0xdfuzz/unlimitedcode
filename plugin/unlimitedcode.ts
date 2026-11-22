@@ -176,6 +176,7 @@ function ensureDaemonRunning(): Promise<boolean> {
 }
 
 let proxyEpoch = 0
+let cachedListen = ""
 
 function isLoopbackProxy(val: string | undefined): boolean {
   if (!val) return false
@@ -183,16 +184,18 @@ function isLoopbackProxy(val: string | undefined): boolean {
 }
 
 function buildProxyURL(epoch: number): string {
-  const raw = (process.env.UNLIMITEDCODE_LISTEN || readConfigJSON()?.listen || DEFAULT_LISTEN).trim()
-  const hostPort = raw.replace(/^https?:\/\//i, "").replace(/^[^@]+@/, "")
-  if (epoch > 0) return `http://r${epoch}@${hostPort}`
-  return `http://${hostPort}`
+  if (!cachedListen) {
+    const raw = (process.env.UNLIMITEDCODE_LISTEN || readConfigJSON()?.listen || DEFAULT_LISTEN).trim()
+    cachedListen = raw.replace(/^https?:\/\//i, "").replace(/^[^@]+@/, "")
+  }
+  if (epoch > 0) return `http://r${epoch}@${cachedListen}`
+  return `http://${cachedListen}`
 }
 
 function ensureProxyEnv(epoch = proxyEpoch): void {
   const proxyURL = buildProxyURL(epoch)
   // Always take over if empty or pointing to a stale loopback proxy (e.g. leftover
-  // WARP :40000, OpenHop :41987, or previous UnlimitedCode epoch) — and keep
+  // WARP :40000, another local proxy, or previous UnlimitedCode epoch) — and keep
   // lowercase https_proxy/http_proxy in sync since Bun checks lowercase first.
   for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] as const) {
     if (!process.env[key] || isLoopbackProxy(process.env[key])) {

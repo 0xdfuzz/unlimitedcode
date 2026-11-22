@@ -52,6 +52,7 @@ type Options struct {
 	Size        int
 	DialTimeout time.Duration
 	Logger      Logger
+	OnSlotReady func()
 }
 
 type SlotStatus struct {
@@ -97,21 +98,24 @@ type aaaaEntry struct {
 }
 
 type Pool struct {
-	stateDir  string
-	size      int
-	timeout   time.Duration
-	log       Logger
-	recycleFn func(ctx context.Context, s *slot, avoidPrefix string) error
+	stateDir    string
+	size        int
+	timeout     time.Duration
+	log         Logger
+	onSlotReady func()
+	recycleFn   func(ctx context.Context, s *slot, avoidPrefix string) error
 
-	mu        sync.Mutex
-	slots     []*slot
-	active    int
-	burnt     map[string]time.Time
-	aaaaCache map[string]aaaaEntry
-	closed    bool
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	burntIOMu   sync.Mutex
+	mu          sync.Mutex
+	slots       []*slot
+	active      int
+	burnt       map[string]time.Time
+	aaaaCache   map[string]aaaaEntry
+	recoverKick chan struct{}
+	closed      bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 func NewPool(opts Options) (*Pool, error) {
@@ -137,14 +141,16 @@ func NewPool(opts Options) (*Pool, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Pool{
-		stateDir:  opts.StateDir,
-		size:      opts.Size,
-		timeout:   opts.DialTimeout,
-		log:       logger,
-		burnt:     make(map[string]time.Time),
-		aaaaCache: make(map[string]aaaaEntry),
-		ctx:       ctx,
-		cancel:    cancel,
+		stateDir:    opts.StateDir,
+		size:        opts.Size,
+		timeout:     opts.DialTimeout,
+		log:         logger,
+		onSlotReady: opts.OnSlotReady,
+		burnt:       make(map[string]time.Time),
+		aaaaCache:   make(map[string]aaaaEntry),
+		recoverKick: make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	p.loadBurnt()
@@ -169,7 +175,7 @@ func (p *Pool) Start(ctx context.Context) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		warmCtx, cancel := context.WithTimeout(p.ctx, 4*time.Second)
+		warmCtx, cancel := context.WithTimeout(p.ctx, 8*time.Second)
 		defer cancel()
 		_ = p.resolveIPv6Target(warmCtx, "opencode.ai:443")
 	}()
@@ -254,11 +260,9 @@ func (p *Pool) Start(ctx context.Context) error {
 			errMu.Lock()
 			summary := strings.Join(bootErrs, "; ")
 			errMu.Unlock()
-			p.Close()
 			return fmt.Errorf("masque pool failed to start any slot: %s", summary)
 		}
 	case <-ctx.Done():
-		p.Close()
 		return ctx.Err()
 	}
 }
@@ -303,7 +307,7 @@ func (p *Pool) DialContext(ctx context.Context, network, addr string) (net.Conn,
 	}
 	target := p.resolveIPv6Target(ctx, addr)
 	s := p.activeSlot()
-	conn, err := p.dialSlot(ctx, s, target, addr)
+	conn, err := p.dialSlot(ctx, s, target)
 	if err == nil {
 		return conn, nil
 	}
@@ -311,24 +315,20 @@ func (p *Pool) DialContext(ctx context.Context, network, addr string) (net.Conn,
 		p.mu.Lock()
 		p.active = alt.id
 		p.mu.Unlock()
-		p.log.Printf("masque active slot=%d dial failed, failing over to slot=%d", s.id, alt.id)
-		return p.dialSlot(ctx, alt, target, addr)
+		p.log.Printf("masque active slot=%d dial failed (%v), failing over to slot=%d", s.id, err, alt.id)
+		return p.dialSlot(ctx, alt, target)
 	}
 	return nil, err
 }
 
-func (p *Pool) dialSlot(ctx context.Context, s *slot, target, fallbackAddr string) (net.Conn, error) {
+func (p *Pool) dialSlot(ctx context.Context, s *slot, target string) (net.Conn, error) {
 	s.mu.Lock()
 	client := s.client
 	s.mu.Unlock()
 	if client == nil {
 		return nil, fmt.Errorf("masque slot %d is not connected", s.id)
 	}
-	conn, err := client.DialContext(ctx, target)
-	if err == nil || target == fallbackAddr {
-		return conn, err
-	}
-	return client.DialContext(ctx, fallbackAddr)
+	return client.DialContext(ctx, target)
 }
 
 // Reconnect implements hop.Reconnector.
@@ -413,10 +413,37 @@ func (p *Pool) healFailedSlots() {
 	}
 }
 
+// KickRecovery immediately wakes any sleeping slot-recovery goroutines and
+// starts immediate recovery for any failed slot (used after resolving active
+// WARP/proxy conflicts so MASQUE comes online without restarting the daemon).
+func (p *Pool) KickRecovery() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	close(p.recoverKick)
+	p.recoverKick = make(chan struct{})
+	p.mu.Unlock()
+
+	for _, s := range p.slots {
+		s.mu.Lock()
+		failed := s.state == "failed"
+		s.mu.Unlock()
+		if failed {
+			p.scheduleRecoverMode(s, true)
+		}
+	}
+}
+
 // scheduleRecover launches at most one background goroutine per slot to revive
 // a failed slot with exponential backoff. Stops immediately once the slot
 // returns to "ready" or the pool closes (0% CPU when healthy).
 func (p *Pool) scheduleRecover(s *slot) {
+	p.scheduleRecoverMode(s, false)
+}
+
+func (p *Pool) scheduleRecoverMode(s *slot, immediate bool) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -442,10 +469,19 @@ func (p *Pool) scheduleRecover(s *slot) {
 		}()
 
 		for i, wait := range recoverBackoffs {
-			select {
-			case <-p.ctx.Done():
-				return
-			case <-time.After(wait):
+			if !(immediate && i == 0) {
+				p.mu.Lock()
+				kickCh := p.recoverKick
+				p.mu.Unlock()
+				timer := time.NewTimer(wait)
+				select {
+				case <-p.ctx.Done():
+					timer.Stop()
+					return
+				case <-kickCh:
+					timer.Stop()
+				case <-timer.C:
+				}
 			}
 
 			s.mu.Lock()
@@ -568,10 +604,13 @@ func (p *Pool) bootSlot(ctx context.Context, s *slot) error {
 			return fmt.Errorf("save slot config: %w", err)
 		}
 	}
-	s.mu.Lock()
-	s.cfg = cfg
-	s.mu.Unlock()
-	return p.connectAndVerify(ctx, s, cfg)
+	client, trace, err := dialAndVerify(ctx, cfg)
+	if err != nil {
+		s.setFailed(err)
+		return err
+	}
+	p.installSlotClient(s, cfg, client, trace)
+	return nil
 }
 
 func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) error {
@@ -593,12 +632,23 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 	hasActiveStreams := s.client != nil && s.client.ActiveStreams() > 0
 	s.mu.Unlock()
 
-	var lastErr error
+	var (
+		lastErr        error
+		fallbackClient *l4Client
+		fallbackCfg    slotConfig
+		fallbackTrace  map[string]string
+	)
+	defer func() {
+		if fallbackClient != nil {
+			_ = fallbackClient.Close()
+		}
+	}()
+
 	enrollErr := hasActiveStreams
 	for attempt := 1; attempt <= maxRecycleTries; attempt++ {
 		if ctx.Err() != nil {
-			s.setFailed(ctx.Err())
-			return ctx.Err()
+			lastErr = ctx.Err()
+			break
 		}
 
 		var nextCfg slotConfig
@@ -624,42 +674,69 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 				break
 			}
 			if attempt < maxRecycleTries {
+				timer := time.NewTimer(800 * time.Millisecond)
 				select {
 				case <-ctx.Done():
-					s.setFailed(ctx.Err())
-					return ctx.Err()
-				case <-time.After(800 * time.Millisecond):
+					timer.Stop()
+					lastErr = ctx.Err()
+					goto done
+				case <-timer.C:
 				}
 			}
 			continue
 		}
-		if err := saveSlotConfig(s.configPath, nextCfg); err != nil {
-			lastErr = err
-			p.log.Printf("masque slot=%d recycle try=%d save error: %v", s.id, attempt, err)
-			continue
-		}
 		prev = nextCfg
 
-		if err := p.connectAndVerify(ctx, s, nextCfg); err != nil {
+		client, trace, err := dialAndVerify(ctx, nextCfg)
+		if err != nil {
 			lastErr = err
 			p.log.Printf("masque slot=%d recycle try=%d verify error: %v", s.id, attempt, err)
 			continue
 		}
 
-		s.mu.Lock()
-		s.cfg = nextCfg
-		gotPrefix := s.prefix
-		gotIP := s.ip
-		s.mu.Unlock()
-
+		gotIP := trace["ip"]
+		gotPrefix := NormalizePrefix(gotIP)
 		if (gotPrefix != avoidPrefix && !p.isBurnt(gotPrefix)) || attempt == maxRecycleTries {
+			if err := saveSlotConfig(s.configPath, nextCfg); err != nil {
+				p.log.Printf("masque slot=%d recycle try=%d save error: %v", s.id, attempt, err)
+			}
+			p.installSlotClient(s, nextCfg, client, trace)
 			s.mu.Lock()
 			s.recycles++
 			s.mu.Unlock()
 			p.log.Printf("masque slot=%d recycled try=%d ip=%s prefix=%s", s.id, attempt, gotIP, gotPrefix)
 			return nil
 		}
+
+		// Keep the latest working candidate as a fallback (closing any older one
+		// immediately so no QUIC sockets leak) without exposing a burnt prefix
+		// while we still have retry attempts left.
+		if fallbackClient != nil {
+			_ = fallbackClient.Close()
+		}
+		fallbackClient = client
+		fallbackCfg = nextCfg
+		fallbackTrace = trace
 		p.log.Printf("masque slot=%d recycle try=%d landed on burnt/same prefix %s (%s), retrying", s.id, attempt, gotPrefix, gotIP)
+	}
+
+done:
+	if fallbackClient != nil {
+		// Better to keep a verified working slot than drop to "failed" if a later
+		// retry hit Cloudflare 429 or a transient timeout.
+		if err := saveSlotConfig(s.configPath, fallbackCfg); err != nil {
+			p.log.Printf("masque slot=%d recycle fallback save error: %v", s.id, err)
+		}
+		c := fallbackClient
+		fallbackClient = nil // ownership transferred to slot; prevent defer close
+		p.installSlotClient(s, fallbackCfg, c, fallbackTrace)
+		s.mu.Lock()
+		s.recycles++
+		gotIP := s.ip
+		gotPrefix := s.prefix
+		s.mu.Unlock()
+		p.log.Printf("masque slot=%d kept fallback ip=%s prefix=%s after retry error: %v", s.id, gotIP, gotPrefix, lastErr)
+		return nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("recycle failed")
@@ -668,11 +745,10 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 	return lastErr
 }
 
-func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) error {
+func dialAndVerify(ctx context.Context, cfg slotConfig) (*l4Client, map[string]string, error) {
 	client, err := newL4Client(cfg)
 	if err != nil {
-		s.setFailed(err)
-		return err
+		return nil, nil, err
 	}
 
 	var trace map[string]string
@@ -680,32 +756,32 @@ func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) er
 	for i := 0; i < 3; i++ {
 		trace, lastErr = fetchTrace(ctx, client)
 		if lastErr == nil && (trace["warp"] == "on" || trace["warp"] == "plus") && trace["ip"] != "" {
-			break
+			return client, trace, nil
 		}
-		select {
-		case <-ctx.Done():
-			_ = client.Close()
-			s.setFailed(ctx.Err())
-			return ctx.Err()
-		case <-time.After(400 * time.Millisecond):
+		if i < 2 {
+			timer := time.NewTimer(400 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				_ = client.Close()
+				return nil, nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
+	_ = client.Close()
 	if lastErr != nil {
-		_ = client.Close()
-		s.setFailed(lastErr)
-		return fmt.Errorf("trace failed: %w", lastErr)
+		return nil, nil, fmt.Errorf("trace failed: %w", lastErr)
 	}
-	if trace["warp"] != "on" && trace["warp"] != "plus" {
-		_ = client.Close()
-		err := fmt.Errorf("trace reported warp=%s", trace["warp"])
-		s.setFailed(err)
-		return err
-	}
+	return nil, nil, fmt.Errorf("trace reported warp=%s", trace["warp"])
+}
 
+func (p *Pool) installSlotClient(s *slot, cfg slotConfig, client *l4Client, trace map[string]string) {
 	ip := trace["ip"]
 	prefix := NormalizePrefix(ip)
 	s.mu.Lock()
 	oldClient := s.client
+	s.cfg = cfg
 	s.client = client
 	s.state = "ready"
 	s.ip = ip
@@ -713,6 +789,24 @@ func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) er
 	s.colo = trace["colo"]
 	s.lastErr = ""
 	s.mu.Unlock()
+
+	// If the currently active slot is not ready (e.g. initial boot failed while
+	// a conflicting VPN was active and this slot recovered first), promote this
+	// slot so traffic resumes immediately.
+	cur := p.activeSlot()
+	if cur.id != s.id {
+		cur.mu.Lock()
+		curReady := cur.state == "ready"
+		cur.mu.Unlock()
+		if !curReady {
+			p.mu.Lock()
+			if p.active == cur.id {
+				p.active = s.id
+			}
+			p.mu.Unlock()
+		}
+	}
+
 	if oldClient != nil && oldClient != client {
 		p.mu.Lock()
 		if p.closed {
@@ -727,7 +821,9 @@ func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) er
 			}(oldClient)
 		}
 	}
-	return nil
+	if p.onSlotReady != nil {
+		p.onSlotReady()
+	}
 }
 
 func (p *Pool) closeSlotClient(s *slot) {
@@ -796,10 +892,13 @@ func (p *Pool) resolveIPv6Target(ctx context.Context, addr string) string {
 }
 
 func (p *Pool) refreshAAAA(ctx context.Context, key string) string {
-	ip := lookupAAAA(ctx, key)
+	ip := lookupTargetIP(ctx, key)
 	ttl := 30 * time.Minute
 	if ip == "" {
-		ttl = 60 * time.Second
+		// Short negative TTL: Cloudflare MASQUE rejects unresolved hostnames
+		// with HTTP 403, so a brief startup/DNS blip must recover immediately
+		// on the next retry instead of failing requests for 60 seconds.
+		ttl = 2 * time.Second
 	}
 	now := time.Now()
 	p.mu.Lock()
@@ -822,40 +921,73 @@ func (p *Pool) refreshAAAA(ctx context.Context, key string) string {
 	return ip
 }
 
-func lookupAAAA(ctx context.Context, host string) string {
-	// Cap OS DNS lookup to 500ms so IPv4-only routers fail over to DoH quickly.
+// lookupTargetIP resolves host to an IP literal for Cloudflare MASQUE CONNECT
+// (which requires IP literals and rejects raw hostnames with HTTP 403).
+// Prefers IPv6 (AAAA) so egress uses the slot's unique /64 prefix, and falls
+// back to IPv4 (A) via OS DNS or IP-literal DoH endpoints if AAAA is absent.
+func lookupTargetIP(ctx context.Context, host string) string {
+	if ip := lookupIPByType(ctx, host, true); ip != "" {
+		return ip
+	}
+	return lookupIPByType(ctx, host, false)
+}
+
+func lookupIPByType(ctx context.Context, host string, ipv6 bool) string {
+	netType := "ip4"
+	qType := "A"
+	wantType := 1
+	if ipv6 {
+		netType = "ip6"
+		qType = "AAAA"
+		wantType = 28
+	}
+
+	// Cap OS DNS lookup to 500ms so IPv4-only or flaky routers fail over to
+	// IP-literal DoH quickly.
 	osCtx, osCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-	ips, err := net.DefaultResolver.LookupIP(osCtx, "ip6", host)
+	ips, err := net.DefaultResolver.LookupIP(osCtx, netType, host)
 	osCancel()
 	if err == nil {
 		for _, ip := range ips {
-			if ip.To4() == nil && ip.To16() != nil {
+			if ipv6 && ip.To4() == nil && ip.To16() != nil {
 				return ip.String()
+			}
+			if !ipv6 && ip.To4() != nil {
+				return ip.To4().String()
 			}
 		}
 	}
-	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+
+	// Use IP-literal DoH endpoints exclusively so resolution works even during
+	// OS DNS outages, giving each endpoint its own bounded budget.
 	dohEndpoints := []string{
-		"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=AAAA",
-		"https://dns.google/resolve?name=" + url.QueryEscape(host) + "&type=AAAA",
+		"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=" + qType,
+		"https://1.0.0.1/dns-query?name=" + url.QueryEscape(host) + "&type=" + qType,
+		"https://8.8.8.8/resolve?name=" + url.QueryEscape(host) + "&type=" + qType,
 	}
 	client := &http.Client{
-		Timeout:   2 * time.Second,
-		Transport: directTransport,
+		Timeout:   3 * time.Second,
+		Transport: dohIPTransport,
 	}
 	for _, dohURL := range dohEndpoints {
+		if ctx.Err() != nil {
+			break
+		}
+		rctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		req, err := http.NewRequestWithContext(rctx, http.MethodGet, dohURL, nil)
 		if err != nil {
+			cancel()
 			continue
 		}
 		req.Header.Set("Accept", "application/dns-json")
 		resp, err := client.Do(req)
 		if err != nil {
+			cancel()
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
+			cancel()
 			continue
 		}
 		var payload struct {
@@ -866,12 +998,14 @@ func lookupAAAA(ctx context.Context, host string) string {
 		}
 		err = json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&payload)
 		resp.Body.Close()
+		cancel()
 		if err != nil {
 			continue
 		}
 		for _, ans := range payload.Answer {
-			if ans.Type == 28 {
-				if parsed, err := netip.ParseAddr(strings.TrimSpace(ans.Data)); err == nil && parsed.Is6() {
+			if ans.Type == wantType {
+				parsed, perr := netip.ParseAddr(strings.TrimSpace(ans.Data))
+				if perr == nil && ((ipv6 && parsed.Is6()) || (!ipv6 && parsed.Is4())) {
 					return parsed.String()
 				}
 			}
@@ -904,16 +1038,14 @@ func (p *Pool) loadBurnt() {
 	}
 }
 
-func (p *Pool) saveBurntLocked() {
-	out := make(map[string]int64, len(p.burnt))
-	for k, exp := range p.burnt {
-		out[k] = exp.Unix()
-	}
+func (p *Pool) saveBurntSnapshot(out map[string]int64) {
 	raw, err := json.Marshal(out)
 	if err != nil {
 		return
 	}
 	raw = append(raw, '\n')
+	p.burntIOMu.Lock()
+	defer p.burntIOMu.Unlock()
 	tmp, err := os.CreateTemp(p.stateDir, ".burnt-*.tmp")
 	if err != nil {
 		return
@@ -941,7 +1073,6 @@ func (p *Pool) markBurnt(prefix string) {
 	now := time.Now()
 	expiry := nextResetUTC(now)
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.pruneBurntLocked(now)
 	if len(p.burnt) >= maxBurntEntries {
 		for k := range p.burnt {
@@ -950,7 +1081,12 @@ func (p *Pool) markBurnt(prefix string) {
 		}
 	}
 	p.burnt[prefix] = expiry
-	p.saveBurntLocked()
+	snapshot := make(map[string]int64, len(p.burnt))
+	for k, exp := range p.burnt {
+		snapshot[k] = exp.Unix()
+	}
+	p.mu.Unlock()
+	p.saveBurntSnapshot(snapshot)
 }
 
 func (p *Pool) isBurnt(prefix string) bool {

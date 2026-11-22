@@ -273,7 +273,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		dialer = upstream.Direct{Timeout: s.opts.DialTimeout}
 	}
 
-	dialCtx, cancel := context.WithTimeout(context.Background(), s.opts.DialTimeout)
+	dialCtx, cancel := context.WithTimeout(r.Context(), s.opts.DialTimeout)
 	defer cancel()
 	remote, err := dialer.DialContext(dialCtx, "tcp", authority)
 	if err != nil {
@@ -328,23 +328,41 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	clientConn := net.Conn(client)
 	remoteConn := net.Conn(remote)
 	if s.opts.IdleTimeout > 0 {
-		clientConn = idleConn{Conn: clientConn, idle: s.opts.IdleTimeout}
-		remoteConn = idleConn{Conn: remoteConn, idle: s.opts.IdleTimeout}
+		clientConn = newIdleConn(clientConn, s.opts.IdleTimeout)
+		remoteConn = newIdleConn(remoteConn, s.opts.IdleTimeout)
 	}
 
-	// rw.Reader may already hold bytes that arrived with the CONNECT request,
-	// so the client to upstream copy must start there.
+	// Drain any bytes that arrived with the CONNECT request without pinning
+	// rw.Reader's buffer for the entire lifetime of long-lived SSE tunnels.
 	var up, down int64
 	done := make(chan struct{}, 2)
+	buffered := rw.Reader.Buffered()
 	go func() {
-		n, _ := io.Copy(remoteConn, rw.Reader)
-		s.bytesUp.Add(n)
-		up = n
+		bufp := copyBufPool.Get().(*[]byte)
+		defer copyBufPool.Put(bufp)
+		var total int64
+		if buffered > 0 {
+			n, err := io.CopyBuffer(remoteConn, io.LimitReader(rw.Reader, int64(buffered)), *bufp)
+			total += n
+			if err != nil {
+				s.bytesUp.Add(total)
+				up = total
+				closeWrite(remote)
+				done <- struct{}{}
+				return
+			}
+		}
+		n, _ := io.CopyBuffer(remoteConn, clientConn, *bufp)
+		total += n
+		s.bytesUp.Add(total)
+		up = total
 		closeWrite(remote)
 		done <- struct{}{}
 	}()
 	go func() {
-		n, _ := io.Copy(clientConn, remoteConn)
+		bufp := copyBufPool.Get().(*[]byte)
+		defer copyBufPool.Put(bufp)
+		n, _ := io.CopyBuffer(clientConn, remoteConn, *bufp)
 		s.bytesDown.Add(n)
 		down = n
 		closeWrite(client)
@@ -398,18 +416,52 @@ func (s *Server) event(format string, args ...any) {
 	s.mu.Unlock()
 }
 
-type idleConn struct {
-	net.Conn
-	idle time.Duration
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
 }
 
-func (c idleConn) Read(p []byte) (int, error) {
-	c.Conn.SetReadDeadline(time.Now().Add(c.idle))
+type idleConn struct {
+	net.Conn
+	idle        time.Duration
+	refreshStep int64 // nanoseconds between deadline updates to avoid per-chunk syscall churn
+	lastReadNS  atomic.Int64
+	lastWriteNS atomic.Int64
+}
+
+func newIdleConn(conn net.Conn, idle time.Duration) *idleConn {
+	step := idle / 4
+	if step > 5*time.Second {
+		step = 5 * time.Second
+	}
+	return &idleConn{
+		Conn:        conn,
+		idle:        idle,
+		refreshStep: step.Nanoseconds(),
+	}
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	now := time.Now()
+	ns := now.UnixNano()
+	if prev := c.lastReadNS.Load(); prev == 0 || ns-prev >= c.refreshStep {
+		if c.lastReadNS.CompareAndSwap(prev, ns) {
+			_ = c.Conn.SetReadDeadline(now.Add(c.idle))
+		}
+	}
 	return c.Conn.Read(p)
 }
 
-func (c idleConn) Write(p []byte) (int, error) {
-	c.Conn.SetWriteDeadline(time.Now().Add(c.idle))
+func (c *idleConn) Write(p []byte) (int, error) {
+	now := time.Now()
+	ns := now.UnixNano()
+	if prev := c.lastWriteNS.Load(); prev == 0 || ns-prev >= c.refreshStep {
+		if c.lastWriteNS.CompareAndSwap(prev, ns) {
+			_ = c.Conn.SetWriteDeadline(now.Add(c.idle))
+		}
+	}
 	return c.Conn.Write(p)
 }
 

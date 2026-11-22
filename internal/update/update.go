@@ -32,10 +32,16 @@ type Release struct {
 	HTMLURL     string `json:"html_url,omitempty"`
 }
 
+var directTransport = &http.Transport{
+	Proxy:           nil,
+	MaxIdleConns:    2,
+	IdleConnTimeout: 10 * time.Second,
+}
+
 func directClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: &http.Transport{Proxy: nil},
+		Transport: directTransport,
 	}
 }
 

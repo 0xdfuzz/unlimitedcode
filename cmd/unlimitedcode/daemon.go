@@ -78,15 +78,24 @@ func cmdDaemon(args []string) {
 		version, cfg.Path, configState, cfg.Listen, cfg.Control, cfg.Egress.Mode, cfg.UpstreamName())
 
 	var (
-		dialer     upstream.Dialer
-		masquePool *masque.Pool
+		dialer         upstream.Dialer
+		masquePool     *masque.Pool
+		bootResumeOnce sync.Once
+		onSlotReady    func()
 	)
+	var p *proxy.Server
+	onSlotReady = func() {
+		if p != nil {
+			bootResumeOnce.Do(p.Resume)
+		}
+	}
 	if cfg.Egress.Mode == config.ModeMasque || cfg.Egress.Mode == config.ModeUsque {
 		pool, err := masque.NewPool(masque.Options{
 			StateDir:    config.MasqueDir(),
 			Size:        cfg.Egress.PoolSize,
 			DialTimeout: time.Duration(cfg.Limits.DialTimeoutSeconds) * time.Second,
 			Logger:      logger,
+			OnSlotReady: func() { onSlotReady() },
 		})
 		if err != nil {
 			logger.Printf("fatal: %v", err)
@@ -126,7 +135,7 @@ func cmdDaemon(args []string) {
 	}
 
 	started := time.Now()
-	p, err := proxy.New(proxy.Options{
+	p, err = proxy.New(proxy.Options{
 		Listen:       cfg.Listen,
 		Allow:        cfg.Allow,
 		AllowPorts:   cfg.AllowPorts,
@@ -181,6 +190,7 @@ func cmdDaemon(args []string) {
 		}
 	}()
 
+	expectedProxy := "http://" + cfg.Listen
 	var (
 		conflictsMu     sync.RWMutex
 		activeConflicts []string
@@ -188,7 +198,7 @@ func cmdDaemon(args []string) {
 	go func() {
 		cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
 		defer ccancel()
-		found := doctor.DetectActiveConflicts(cctx)
+		found := doctor.DetectActiveConflicts(cctx, expectedProxy)
 		if len(found) > 0 {
 			conflictsMu.Lock()
 			activeConflicts = found
@@ -213,12 +223,15 @@ func cmdDaemon(args []string) {
 			return cp
 		},
 		OnFixConflicts: func(rctx context.Context) ([]string, []string) {
-			actions, remaining := doctor.ResolveActiveConflicts(rctx)
+			actions, remaining := doctor.ResolveActiveConflicts(rctx, expectedProxy)
 			conflictsMu.Lock()
 			activeConflicts = remaining
 			conflictsMu.Unlock()
 			if len(actions) > 0 {
 				logger.Printf("conflicts resolved: %s", strings.Join(actions, "; "))
+			}
+			if masquePool != nil && (len(actions) > 0 || len(remaining) == 0) {
+				masquePool.KickRecovery()
 			}
 			return actions, remaining
 		},
@@ -253,10 +266,15 @@ func cmdDaemon(args []string) {
 			err := masquePool.Start(bootCtx)
 			bootCancel()
 			if err != nil {
-				errCh <- err
-				return
+				if ctx.Err() != nil {
+					return
+				}
+				// Keep the control server alive instead of crashing the daemon so
+				// Desktop/TUI can surface the conflict prompt (e.g. WARP blocking
+				// UDP 443) and KickRecovery() can bring MASQUE online in-place.
+				logger.Printf("warning: masque initial boot failed (%v); staying alive for background recovery", err)
 			}
-			p.Resume()
+			bootResumeOnce.Do(p.Resume)
 		}()
 	}
 

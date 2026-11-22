@@ -207,3 +207,60 @@ func TestL4ClientDrainAndCloseWaitsForActiveStreams(t *testing.T) {
 		t.Fatal("expected client to be closed after drain")
 	}
 }
+
+func TestKickRecoveryWakesSleepingSlotImmediately(t *testing.T) {
+	origBackoffs := recoverBackoffs
+	recoverBackoffs = []time.Duration{5 * time.Minute}
+	defer func() { recoverBackoffs = origBackoffs }()
+
+	var readyCalled atomic.Bool
+	pool, err := NewPool(Options{
+		StateDir:    t.TempDir(),
+		Size:        2,
+		OnSlotReady: func() { readyCalled.Store(true) },
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	defer pool.Close()
+
+	pool.slots[0].mu.Lock()
+	pool.slots[0].state = "failed"
+	pool.slots[0].mu.Unlock()
+
+	pool.slots[1].mu.Lock()
+	pool.slots[1].state = "failed"
+	pool.slots[1].mu.Unlock()
+
+	pool.recycleFn = func(ctx context.Context, s *slot, avoidPrefix string) error {
+		pool.installSlotClient(s, slotConfig{}, &l4Client{}, map[string]string{
+			"ip":   "2a09:bac5:b94:abcd::1",
+			"colo": "GRU",
+		})
+		return nil
+	}
+
+	// Put slot-0 to sleep on the 5-minute backoff timer.
+	pool.scheduleRecover(pool.slots[0])
+	time.Sleep(25 * time.Millisecond)
+
+	// KickRecovery must wake slot-0 immediately AND start slot-1 without waiting 5 minutes.
+	pool.KickRecovery()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if readyCalled.Load() {
+			pool.slots[0].mu.Lock()
+			s0 := pool.slots[0].state
+			pool.slots[0].mu.Unlock()
+			pool.slots[1].mu.Lock()
+			s1 := pool.slots[1].state
+			pool.slots[1].mu.Unlock()
+			if s0 == "ready" && s1 == "ready" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("KickRecovery did not revive failed slots promptly (readyCalled=%v)", readyCalled.Load())
+}

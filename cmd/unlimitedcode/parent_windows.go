@@ -13,6 +13,14 @@ import (
 const (
 	processSynchronize = 0x00100000
 	infiniteTimeout    = 0xFFFFFFFF
+	waitObject0        = 0x00000000
+)
+
+var (
+	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
+	procCreateEventW         = kernel32.NewProc("CreateEventW")
+	procSetEvent             = kernel32.NewProc("SetEvent")
+	procWaitForMultipleObjs  = kernel32.NewProc("WaitForMultipleObjects")
 )
 
 // watchParent blocks at 0% CPU until the watched OpenCode process exits.
@@ -41,24 +49,41 @@ func watchParent(ctx context.Context, pid int, cancel context.CancelFunc, logf f
 	}
 }
 
+// waitProcessExit blocks at 0% CPU until either the target process exits or
+// ctx is cancelled, using a Win32 manual-reset event + WaitForMultipleObjects
+// so handles are never closed while waited on.
 func waitProcessExit(ctx context.Context, pid int) bool {
 	handle, err := syscall.OpenProcess(processSynchronize, false, uint32(pid))
 	if err != nil {
 		return true
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = syscall.WaitForSingleObject(handle, infiniteTimeout)
-		_ = syscall.CloseHandle(handle)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-ctx.Done():
-		_ = syscall.CloseHandle(handle)
-		return false
+	defer syscall.CloseHandle(handle)
+
+	evRaw, _, _ := procCreateEventW.Call(0, 1, 0, 0)
+	if evRaw == 0 {
+		return ctx.Err() == nil
 	}
+	ev := syscall.Handle(evRaw)
+	wakeDone := make(chan struct{})
+	stopWake := context.AfterFunc(ctx, func() {
+		defer close(wakeDone)
+		_, _, _ = procSetEvent.Call(uintptr(ev))
+	})
+	defer func() {
+		if !stopWake() {
+			<-wakeDone
+		}
+		_ = syscall.CloseHandle(ev)
+	}()
+
+	handles := [2]syscall.Handle{handle, ev}
+	r, _, _ := procWaitForMultipleObjs.Call(
+		uintptr(len(handles)),
+		uintptr(unsafe.Pointer(&handles[0])),
+		0, // bWaitAll = FALSE
+		infiniteTimeout,
+	)
+	return r == waitObject0
 }
 
 func findSurvivingOpenCodePID(excludePID int) int {
