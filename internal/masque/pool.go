@@ -29,7 +29,7 @@ import (
 
 const (
 	defaultPoolSize = 2
-	maxRecycleTries = 5
+	maxRecycleTries = 8
 	maxBurntEntries = 200
 )
 
@@ -677,6 +677,9 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 		}
 	}()
 
+	hasCreds := prev.PrivateKey != "" && prev.EndpointV4 != "" && prev.EndpointPubKey != ""
+	needReEnroll := !hasCreds
+	configChanged := false
 	enrollErr := false
 	for attempt := 1; attempt <= maxRecycleTries; attempt++ {
 		if ctx.Err() != nil {
@@ -686,74 +689,88 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 
 		var nextCfg slotConfig
 		var err error
-		p.mu.Lock()
-		inRegBackoff := time.Now().Before(p.regBackoffUntil)
-		p.mu.Unlock()
-		// Always prefer lightweight key re-enrollment (PATCH /reg/<id>) on the
-		// first two tries — and whenever POST /reg is in 429/1015 cooldown —
-		// because PATCH rotates the IPv6 /64 without hitting Cloudflare's
-		// stricter POST /reg WAF limit (1015), while already-established QUIC
-		// tunnels continue draining cleanly.
-		canPatch := !enrollErr && prev.ID != "" && prev.AccessToken != ""
-		if canPatch && (attempt <= 2 || inRegBackoff) {
-			nextCfg, err = enrollNewKey(ctx, prev)
-			if err != nil && !isTransientNetErr(err) {
-				enrollErr = true
+		if !needReEnroll {
+			// Fast path: opening a fresh QUIC connection with the existing
+			// enrolled key already draws a new IPv6 /64 from Cloudflare's edge
+			// pool in ~450ms with zero api.cloudflareclient.com calls, zero
+			// 429/1015 risk, and zero revocation of draining streams.
+			nextCfg = prev
+			if attempt%2 == 0 {
+				if nextCfg.EndpointV4 == "162.159.198.1" {
+					nextCfg.EndpointV4 = "162.159.198.2"
+				} else if nextCfg.EndpointV4 == "162.159.198.2" {
+					nextCfg.EndpointV4 = "162.159.198.1"
+				}
 			}
-		} else if inRegBackoff {
-			// Avoid hammering POST /reg while Cloudflare's 1015 window is active.
-			lastErr = errors.New("register device: cooling down after cloudflare 429/1015")
-			break
 		} else {
-			nextCfg, err = registerAndEnroll(ctx)
-			if err != nil && isRateLimitErr(err) {
-				p.mu.Lock()
-				p.regBackoffUntil = time.Now().Add(90 * time.Second)
-				p.mu.Unlock()
-				// If POST /reg is rate-limited on this IP, fall back to PATCH
-				// on the existing registered device if we haven't tried it yet.
-				if canPatch {
-					nextCfg, err = enrollNewKey(ctx, prev)
-					if err != nil && !isTransientNetErr(err) {
-						enrollErr = true
+			p.mu.Lock()
+			inRegBackoff := time.Now().Before(p.regBackoffUntil)
+			p.mu.Unlock()
+			// Fallback path (missing/rejected key): prefer PATCH /reg/<id>
+			// before POST /reg to avoid Cloudflare's stricter 1015 limit.
+			canPatch := !enrollErr && prev.ID != "" && prev.AccessToken != ""
+			if canPatch && (attempt <= 2 || inRegBackoff) {
+				nextCfg, err = enrollNewKey(ctx, prev)
+				if err != nil && !isTransientNetErr(err) {
+					enrollErr = true
+				}
+			} else if inRegBackoff {
+				lastErr = errors.New("register device: cooling down after cloudflare 429/1015")
+				break
+			} else {
+				nextCfg, err = registerAndEnroll(ctx)
+				if err != nil && isRateLimitErr(err) {
+					p.mu.Lock()
+					p.regBackoffUntil = time.Now().Add(90 * time.Second)
+					p.mu.Unlock()
+					if canPatch {
+						nextCfg, err = enrollNewKey(ctx, prev)
+						if err != nil && !isTransientNetErr(err) {
+							enrollErr = true
+						}
 					}
 				}
 			}
-		}
-		if err != nil {
-			lastErr = err
-			p.log.Printf("masque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
-			if isRateLimitErr(err) {
-				// Stop immediately on Cloudflare 429/1015 so we don't extend the
-				// rate-limit window; background recovery will retry with backoff.
-				break
-			}
-			if attempt < maxRecycleTries {
-				timer := time.NewTimer(800 * time.Millisecond)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					lastErr = ctx.Err()
-					goto done
-				case <-timer.C:
+			if err != nil {
+				lastErr = err
+				p.log.Printf("masque slot=%d recycle try=%d enroll error: %v", s.id, attempt, err)
+				if isRateLimitErr(err) {
+					break
 				}
+				if attempt < maxRecycleTries {
+					timer := time.NewTimer(800 * time.Millisecond)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						lastErr = ctx.Err()
+						goto done
+					case <-timer.C:
+					}
+				}
+				continue
 			}
-			continue
+			prev = nextCfg
+			configChanged = true
+			needReEnroll = false
 		}
-		prev = nextCfg
 
 		client, trace, err := dialAndVerify(ctx, nextCfg)
 		if err != nil {
 			lastErr = err
 			p.log.Printf("masque slot=%d recycle try=%d verify error: %v", s.id, attempt, err)
+			// If a zero-API QUIC re-dial fails, fall back to key re-enrollment
+			// on the next attempt in case the stored key was revoked or expired.
+			needReEnroll = true
 			continue
 		}
 
 		gotIP := trace["ip"]
 		gotPrefix := NormalizePrefix(gotIP)
 		if (gotPrefix != avoidPrefix && !p.isPrefixInUseByOther(s.id, gotPrefix) && !p.isBurnt(gotPrefix)) || attempt == maxRecycleTries {
-			if err := saveSlotConfig(s.configPath, nextCfg); err != nil {
-				p.log.Printf("masque slot=%d recycle try=%d save error: %v", s.id, attempt, err)
+			if configChanged {
+				if err := saveSlotConfig(s.configPath, nextCfg); err != nil {
+					p.log.Printf("masque slot=%d recycle try=%d save error: %v", s.id, attempt, err)
+				}
 			}
 			p.installSlotClient(s, nextCfg, client, trace)
 			s.mu.Lock()
@@ -779,8 +796,10 @@ done:
 	if fallbackClient != nil {
 		// Better to keep a verified working slot than drop to "failed" if a later
 		// retry hit Cloudflare 429 or a transient timeout.
-		if err := saveSlotConfig(s.configPath, fallbackCfg); err != nil {
-			p.log.Printf("masque slot=%d recycle fallback save error: %v", s.id, err)
+		if configChanged {
+			if err := saveSlotConfig(s.configPath, fallbackCfg); err != nil {
+				p.log.Printf("masque slot=%d recycle fallback save error: %v", s.id, err)
+			}
 		}
 		c := fallbackClient
 		fallbackClient = nil // ownership transferred to slot; prevent defer close
