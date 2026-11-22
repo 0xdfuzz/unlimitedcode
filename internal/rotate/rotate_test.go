@@ -267,3 +267,44 @@ func TestHopTransportGrace(t *testing.T) {
 		}
 	}
 }
+
+func TestHopSiblingFreeLimitGrace(t *testing.T) {
+	gate := &fakeGate{events: &[]string{}}
+	rec := &fakeReconnector{}
+	now := time.Unix(3000, 0)
+	m, err := New(Options{
+		Gate:        gate,
+		Reconnector: rec,
+		Timeout:     time.Second,
+		Now:         func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sub-agent A triggers fast-rotate on attempt=2.
+	resA := m.Hop(context.Background(), Request{Reason: "provider.free-limit", Session: "sess-a", Attempt: 2})
+	if resA.Status != "ok" || resA.Coalesced || resA.Epoch != 1 {
+		t.Fatalf("resA = %+v", resA)
+	}
+
+	// Sub-agent B reports its stale 429 from the old IP 50ms later -> must coalesce without burning slot 1.
+	now = now.Add(50 * time.Millisecond)
+	resB := m.Hop(context.Background(), Request{Reason: "provider.free-limit", Session: "sess-b", Attempt: 2})
+	if resB.Status != "ok" || !resB.Coalesced || resB.Epoch != 1 {
+		t.Fatalf("expected sibling coalesce, got %+v", resB)
+	}
+	if rec.callCount() != 1 {
+		t.Fatalf("reconnects = %d, want 1", rec.callCount())
+	}
+
+	// Same session A retrying with attempt=3 (new slot was also burnt) must rotate immediately.
+	now = now.Add(100 * time.Millisecond)
+	resA3 := m.Hop(context.Background(), Request{Reason: "provider.free-limit", Session: "sess-a", Attempt: 3})
+	if resA3.Status != "ok" || resA3.Coalesced || resA3.Epoch != 2 {
+		t.Fatalf("expected same-session retry to rotate, got %+v", resA3)
+	}
+	if rec.callCount() != 2 {
+		t.Fatalf("reconnects = %d, want 2", rec.callCount())
+	}
+}

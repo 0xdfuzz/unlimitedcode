@@ -75,24 +75,32 @@ type Stats struct {
 }
 
 type Manager struct {
-	gate   Gate
-	rec    Reconnector
-	opts   Options
-	log    Logger
-	now    func() time.Time
-	mu     sync.Mutex
-	run    *call
-	epoch  int64
-	lastF  time.Time
-	lastOK time.Time
-	times  []time.Time
-	stats  Stats
+	gate          Gate
+	rec           Reconnector
+	opts          Options
+	log           Logger
+	now           func() time.Time
+	mu            sync.Mutex
+	run           *call
+	epoch         int64
+	lastF         time.Time
+	lastOK        time.Time
+	lastOKSession string
+	lastOKAttempt int
+	times         []time.Time
+	stats         Stats
 }
 
 // transportGrace suppresses duplicate proxy.transport-error hops triggered by
-// sibling sub-agents whose sockets were intentionally reset by CloseTunnels()
-// during a rotation that just succeeded.
+// sibling sub-agents whose sockets were intentionally reset during a rotation
+// that just succeeded.
 const transportGrace = 5 * time.Second
+
+// siblingFreeLimitGrace suppresses stale provider.free-limit hops arriving from
+// OTHER parallel sub-agents right after a fast-rotate (1-2ms) completed on an
+// older IP, preventing them from burning the brand-new slot before using it.
+// A retry from the same session (higher attempt) still rotates immediately.
+const siblingFreeLimitGrace = 2 * time.Second
 
 type call struct {
 	done   chan struct{}
@@ -151,11 +159,22 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 	}
 
 	now := m.now()
-	if req.Reason == "proxy.transport-error" && !m.lastOK.IsZero() && now.Sub(m.lastOK) < transportGrace {
-		m.stats.Coalesced++
-		ep := m.epoch
-		m.mu.Unlock()
-		return Result{Status: "ok", Coalesced: true, Epoch: ep}
+	if !m.lastOK.IsZero() {
+		sinceOK := now.Sub(m.lastOK)
+		if req.Reason == "proxy.transport-error" && sinceOK < transportGrace {
+			m.stats.Coalesced++
+			ep := m.epoch
+			m.mu.Unlock()
+			return Result{Status: "ok", Coalesced: true, Epoch: ep}
+		}
+		if req.Reason == "provider.free-limit" && sinceOK < siblingFreeLimitGrace &&
+			req.Session != "" && m.lastOKSession != "" &&
+			req.Session != m.lastOKSession && req.Attempt <= m.lastOKAttempt {
+			m.stats.Coalesced++
+			ep := m.epoch
+			m.mu.Unlock()
+			return Result{Status: "ok", Coalesced: true, Epoch: ep}
+		}
 	}
 
 	if !m.lastF.IsZero() && m.opts.Cooldown > 0 {
@@ -195,6 +214,8 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 		result.Epoch = m.epoch
 		m.lastF = time.Time{}
 		m.lastOK = finished
+		m.lastOKSession = req.Session
+		m.lastOKAttempt = req.Attempt
 	} else {
 		m.stats.Failures++
 		m.lastF = finished
