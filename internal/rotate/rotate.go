@@ -7,9 +7,12 @@ package rotate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -38,6 +41,7 @@ type Options struct {
 	Cooldown    time.Duration
 	MaxPerHour  int
 	MaxPerDay   int
+	StatePath   string
 	Logger      Logger
 	Now         func() time.Time
 }
@@ -131,13 +135,45 @@ func New(opts Options) (*Manager, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{
+	m := &Manager{
 		gate: opts.Gate,
 		rec:  opts.Reconnector,
 		opts: opts,
 		log:  logger,
 		now:  now,
-	}, nil
+	}
+	m.loadState()
+	return m, nil
+}
+
+type persistedState struct {
+	Count int64 `json:"count"`
+}
+
+func (m *Manager) loadState() {
+	if m.opts.StatePath == "" {
+		return
+	}
+	raw, err := os.ReadFile(m.opts.StatePath)
+	if err != nil {
+		return
+	}
+	var st persistedState
+	if json.Unmarshal(raw, &st) == nil && st.Count > 0 {
+		m.stats.Count = st.Count
+	}
+}
+
+func (m *Manager) saveState(count int64) {
+	if m.opts.StatePath == "" {
+		return
+	}
+	raw, err := json.Marshal(persistedState{Count: count})
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(m.opts.StatePath), 0o700)
+	_ = os.WriteFile(m.opts.StatePath, append(raw, '\n'), 0o600)
 }
 
 // Hop runs one egress change or waits for the one already running. The
@@ -223,7 +259,9 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 	m.run = nil
 	running.result = result
 	close(running.done)
+	savedCount := m.stats.Count
 	m.mu.Unlock()
+	m.saveState(savedCount)
 
 	return result
 }

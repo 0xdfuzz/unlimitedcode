@@ -106,10 +106,11 @@ func Home() string {
 	return filepath.Join(home, ".local", "state", "unlimitedcode")
 }
 
-func ConfigPath() string { return filepath.Join(Home(), "config.json") }
-func LogPath() string    { return filepath.Join(Home(), "logs", "unlimitedcode.log") }
-func TokenPath() string  { return filepath.Join(Home(), "control.token") }
-func MasqueDir() string  { return filepath.Join(Home(), "masque") }
+func ConfigPath() string      { return filepath.Join(Home(), "config.json") }
+func LogPath() string         { return filepath.Join(Home(), "logs", "unlimitedcode.log") }
+func TokenPath() string       { return filepath.Join(Home(), "control.token") }
+func MasqueDir() string       { return filepath.Join(Home(), "masque") }
+func RotateStatsPath() string { return filepath.Join(MasqueDir(), "rotations.json") }
 
 func Load(path string) (Config, error) {
 	if path == "" {

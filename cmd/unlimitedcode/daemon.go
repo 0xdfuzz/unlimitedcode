@@ -159,6 +159,7 @@ func cmdDaemon(args []string) {
 			Cooldown:    time.Duration(cfg.Rotate.FailureCooldownSecs) * time.Second,
 			MaxPerHour:  cfg.Rotate.MaxPerHour,
 			MaxPerDay:   cfg.Rotate.MaxPerDay,
+			StatePath:   config.RotateStatsPath(),
 			Logger:      logger,
 		}); err != nil {
 			logger.Printf("warning: rotate unavailable: %v", err)

@@ -355,7 +355,9 @@ async function loadTokenStats(): Promise<FullStats> {
         const usage = parsed?.usage || parsed?.tokens
         if (!usage) continue
         const inp = Number(usage.input ?? usage.inputTokens ?? usage.promptTokens ?? 0)
-        const out = Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0)
+        const out =
+          Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0) +
+          Number(usage.reasoning ?? usage.reasoningTokens ?? 0)
         const cache = Number(usage.cache?.read ?? usage.cacheRead ?? usage.cachedInputTokens ?? 0)
         if (inp + out + cache <= 0) continue
 
@@ -368,10 +370,10 @@ async function loadTokenStats(): Promise<FullStats> {
         if (row.time_created >= dayAgo) windows.push("24h")
 
         const dt = new Date(row.time_created)
-        const started = Number(parsed?.time?.created ?? 0)
-        const completed = Number(parsed?.time?.completed ?? 0)
+        const genStart = Number(parsed?.time?.firstToken || parsed?.time?.created || 0)
+        const genEnd = Number(parsed?.time?.streamed || parsed?.time?.completed || 0)
         const turnSpeedSec =
-          out > 0 && completed > started && completed - started < 300_000 ? (completed - started) / 1000 : 0
+          out > 0 && genEnd > genStart && genEnd - genStart < 300_000 ? (genEnd - genStart) / 1000 : 0
 
         addToScope(freeAcc, windows, inp, out, cache, mid, dt, turnSpeedSec)
       }
