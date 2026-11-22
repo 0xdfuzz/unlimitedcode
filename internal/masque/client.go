@@ -481,13 +481,16 @@ type l4Client struct {
 	quicConfig *quic.Config
 	endpoints  []*net.UDPAddr
 
-	dialMu     sync.Mutex // serializes QUIC reconnects to prevent duplicate handshakes
-	mu         sync.Mutex
-	udpConn    *net.UDPConn
-	quicTr     *quic.Transport
-	quicConn   *quic.Conn
-	clientConn *http3.ClientConn
-	closed     bool
+	dialMu        sync.Mutex // serializes QUIC reconnects to prevent duplicate handshakes
+	mu            sync.Mutex
+	udpConn       *net.UDPConn
+	quicTr        *quic.Transport
+	quicConn      *quic.Conn
+	clientConn    *http3.ClientConn
+	activeStreams int
+	draining      bool
+	drained       chan struct{}
+	closed        bool
 }
 
 func newL4Client(cfg slotConfig) (*l4Client, error) {
@@ -576,10 +579,20 @@ func (c *l4Client) dialOnce(ctx context.Context, target string) (net.Conn, error
 		_ = stream.Close()
 		return nil, fmt.Errorf("MASQUE CONNECT %s rejected: HTTP %d", target, resp.StatusCode)
 	}
+	c.mu.Lock()
+	if c.closed || c.draining {
+		c.mu.Unlock()
+		_ = stream.Close()
+		return nil, net.ErrClosed
+	}
+	c.activeStreams++
+	c.mu.Unlock()
+
 	return &masqueConn{
 		stream: stream,
 		local:  localAddr,
 		remote: masqueAddr(target),
+		owner:  c,
 	}, nil
 }
 
@@ -719,9 +732,58 @@ func (c *l4Client) resetConn(expected *http3.ClientConn) {
 	closeQUICResources(qc, tr, uc, "reset")
 }
 
+func (c *l4Client) releaseStream() {
+	c.mu.Lock()
+	if c.activeStreams > 0 {
+		c.activeStreams--
+	}
+	if c.draining && c.activeStreams == 0 && c.drained != nil {
+		close(c.drained)
+		c.drained = nil
+	}
+	c.mu.Unlock()
+}
+
+// DrainAndClose waits for all in-flight streams on a retired MASQUE client to
+// finish cleanly (up to maxWait or ctx cancellation) before closing the QUIC
+// transport, preventing mid-stream ECONNRESET on parallel sub-agents.
+func (c *l4Client) DrainAndClose(ctx context.Context, maxWait time.Duration) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.draining = true
+	if c.activeStreams == 0 {
+		c.mu.Unlock()
+		_ = c.Close()
+		return
+	}
+	ch := c.drained
+	if ch == nil {
+		ch = make(chan struct{})
+		c.drained = ch
+	}
+	c.mu.Unlock()
+
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+	select {
+	case <-ch:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	_ = c.Close()
+}
+
 func (c *l4Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
+	c.draining = true
+	if c.drained != nil {
+		close(c.drained)
+		c.drained = nil
+	}
 	qc, tr, uc := c.quicConn, c.quicTr, c.udpConn
 	c.clientConn = nil
 	c.quicConn = nil
@@ -737,6 +799,7 @@ type masqueConn struct {
 	stream *http3.RequestStream
 	local  net.Addr
 	remote net.Addr
+	owner  *l4Client
 	once   sync.Once
 }
 
@@ -747,6 +810,9 @@ func (m *masqueConn) Close() error {
 	m.once.Do(func() {
 		err = m.stream.Close()
 		m.stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+		if m.owner != nil {
+			m.owner.releaseStream()
+		}
 	})
 	return err
 }

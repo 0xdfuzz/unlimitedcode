@@ -80,7 +80,7 @@ func Default() Config {
 			MaxPerDay:           0,
 		},
 		Limits: Limits{
-			MaxTunnels:         128,
+			MaxTunnels:         256,
 			IdleTimeoutSeconds: 300,
 			DialTimeoutSeconds: 10,
 		},

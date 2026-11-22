@@ -258,4 +258,12 @@ func TestHopTransportGrace(t *testing.T) {
 	if rec.callCount() != 2 {
 		t.Fatalf("reconnects = %d, want 2", rec.callCount())
 	}
+	if res.Epoch != 2 {
+		t.Fatalf("expected Epoch=2, got %d", res.Epoch)
+	}
+	for _, ev := range *gate.events {
+		if ev == "close" {
+			t.Fatalf("provider.free-limit must not kill active streaming tunnels (events=%v)", *gate.events)
+		}
+	}
 }

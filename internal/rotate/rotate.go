@@ -56,12 +56,14 @@ type Result struct {
 	Status     string `json:"status"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	Coalesced  bool   `json:"coalesced,omitempty"`
+	Epoch      int64  `json:"epoch,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
 type Stats struct {
 	Enabled        bool       `json:"enabled"`
 	Busy           bool       `json:"busy"`
+	Epoch          int64      `json:"epoch"`
 	Count          int64      `json:"count"`
 	Failures       int64      `json:"failures"`
 	Coalesced      int64      `json:"coalesced"`
@@ -80,6 +82,7 @@ type Manager struct {
 	now    func() time.Time
 	mu     sync.Mutex
 	run    *call
+	epoch  int64
 	lastF  time.Time
 	lastOK time.Time
 	times  []time.Time
@@ -150,8 +153,9 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 	now := m.now()
 	if req.Reason == "proxy.transport-error" && !m.lastOK.IsZero() && now.Sub(m.lastOK) < transportGrace {
 		m.stats.Coalesced++
+		ep := m.epoch
 		m.mu.Unlock()
-		return Result{Status: "ok", Coalesced: true}
+		return Result{Status: "ok", Coalesced: true, Epoch: ep}
 	}
 
 	if !m.lastF.IsZero() && m.opts.Cooldown > 0 {
@@ -186,6 +190,9 @@ func (m *Manager) Hop(ctx context.Context, req Request) Result {
 	finished := m.now()
 	m.stats.LastAt = &finished
 	if result.Status == "ok" {
+		m.epoch++
+		m.stats.Epoch = m.epoch
+		result.Epoch = m.epoch
 		m.lastF = time.Time{}
 		m.lastOK = finished
 	} else {
@@ -209,7 +216,13 @@ func (m *Manager) execute(req Request) Result {
 
 	m.gate.Pause()
 	defer m.gate.Resume()
-	m.gate.CloseTunnels()
+	// Automatic plugin rotations switch Bun's proxy URL epoch (http://r<epoch>@...)
+	// so new requests immediately open fresh TCP tunnels on the new slot without
+	// murdering active streaming sub-agents on the old slot (which drains cleanly).
+	// Manual/CLI rotations still close tunnels for non-epoch callers.
+	if req.Reason != "provider.free-limit" && req.Reason != "proxy.transport-error" {
+		m.gate.CloseTunnels()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.opts.Timeout)
 	defer cancel()

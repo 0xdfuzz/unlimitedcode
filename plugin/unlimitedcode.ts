@@ -53,15 +53,10 @@ function rotateSessionAlias(sessionID: string): string {
   return alias
 }
 
-function ensureSessionAlias(sessionID: string): string {
-  if (!sessionID) return ""
-  const existing = sessionAliases.get(sessionID)
-  if (existing) return existing
-  return rotateSessionAlias(sessionID)
-}
-
 function applySessionAlias(headers: Record<string, string> | Headers, sessionID: string): void {
-  const alias = ensureSessionAlias(sessionID)
+  // Only rewrite session headers after a session has rotated (on 429). Before
+  // that, keep OpenCode's native session ID intact so promptCacheKey matches 1:1.
+  const alias = sessionID ? sessionAliases.get(sessionID) : ""
   if (!alias) return
   const keys = [
     "x-opencode-session",
@@ -180,17 +175,25 @@ function ensureDaemonRunning(): Promise<boolean> {
   return daemonBootPromise
 }
 
+let proxyEpoch = 0
+
 function isLoopbackProxy(val: string | undefined): boolean {
   if (!val) return false
-  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]):/i.test(val.trim())
+  return /^https?:\/\/([^@\s]+@)?(127\.0\.0\.1|localhost|\[::1\]):/i.test(val.trim())
 }
 
-function ensureProxyEnv(): void {
-  const listen = process.env.UNLIMITEDCODE_LISTEN || readConfigJSON()?.listen || DEFAULT_LISTEN
-  const proxyURL = listen.startsWith("http") ? listen : `http://${listen}`
+function buildProxyURL(epoch: number): string {
+  const raw = (process.env.UNLIMITEDCODE_LISTEN || readConfigJSON()?.listen || DEFAULT_LISTEN).trim()
+  const hostPort = raw.replace(/^https?:\/\//i, "").replace(/^[^@]+@/, "")
+  if (epoch > 0) return `http://r${epoch}@${hostPort}`
+  return `http://${hostPort}`
+}
+
+function ensureProxyEnv(epoch = proxyEpoch): void {
+  const proxyURL = buildProxyURL(epoch)
   // Always take over if empty or pointing to a stale loopback proxy (e.g. leftover
-  // WARP :40000, OpenHop :41987, or OpenCode-Infinite gate) — and keep lowercase
-  // https_proxy/http_proxy in sync since Bun checks lowercase before uppercase.
+  // WARP :40000, OpenHop :41987, or previous UnlimitedCode epoch) — and keep
+  // lowercase https_proxy/http_proxy in sync since Bun checks lowercase first.
   for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] as const) {
     if (!process.env[key] || isLoopbackProxy(process.env[key])) {
       process.env[key] = proxyURL
@@ -198,6 +201,15 @@ function ensureProxyEnv(): void {
   }
   if (!process.env.NO_PROXY) process.env.NO_PROXY = "localhost,127.0.0.1,::1"
   if (!process.env.no_proxy) process.env.no_proxy = "localhost,127.0.0.1,::1"
+}
+
+function setProxyEpoch(next: number): void {
+  const target = Number.isFinite(next) && next > proxyEpoch ? Math.floor(next) : proxyEpoch + 1
+  proxyEpoch = target
+  // Changing the proxy userinfo (http://r1@127.0.0.1:42987 -> http://r2@...)
+  // makes Bun open a brand-new HTTPS CONNECT tunnel on the newly active slot
+  // while leaving all sibling sub-agents' in-flight streams alive on the old slot.
+  ensureProxyEnv(proxyEpoch)
 }
 
 async function controlCall(path: string, method = "GET", body?: any, timeoutMs = 8_000): Promise<any | null> {
@@ -271,7 +283,10 @@ async function requestRotate(event: any, type = "provider.free-limit"): Promise<
     },
     ROTATE_TIMEOUT_MS,
   )
-  if (result?.status === "ok") return { retry: true, delay: 0 }
+  if (result?.status === "ok") {
+    setProxyEpoch(Number(result?.epoch ?? 0))
+    return { retry: true, delay: 0 }
+  }
   return null
 }
 

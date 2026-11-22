@@ -181,3 +181,29 @@ func TestBurntPersistence(t *testing.T) {
 		t.Fatal("expected burnt prefix to persist across Pool restart")
 	}
 }
+
+func TestL4ClientDrainAndCloseWaitsForActiveStreams(t *testing.T) {
+	c := &l4Client{activeStreams: 1}
+	done := make(chan struct{})
+	go func() {
+		c.DrainAndClose(context.Background(), 5*time.Second)
+		close(done)
+	}()
+
+	// Must not close while activeStreams > 0.
+	select {
+	case <-done:
+		t.Fatal("DrainAndClose closed early while stream was still active")
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	c.releaseStream()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("DrainAndClose did not finish promptly after last stream released")
+	}
+	if !c.closed {
+		t.Fatal("expected client to be closed after drain")
+	}
+}

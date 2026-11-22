@@ -700,7 +700,18 @@ func (p *Pool) connectAndVerify(ctx context.Context, s *slot, cfg slotConfig) er
 	s.lastErr = ""
 	s.mu.Unlock()
 	if oldClient != nil && oldClient != client {
-		_ = oldClient.Close()
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			_ = oldClient.Close()
+		} else {
+			p.wg.Add(1)
+			p.mu.Unlock()
+			go func(oc *l4Client) {
+				defer p.wg.Done()
+				oc.DrainAndClose(p.ctx, 3*time.Minute)
+			}(oldClient)
+		}
 	}
 	return nil
 }
