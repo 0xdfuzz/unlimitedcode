@@ -680,7 +680,7 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 		canPatch := !enrollErr && prev.ID != "" && prev.AccessToken != ""
 		if canPatch && (attempt <= 2 || inRegBackoff) {
 			nextCfg, err = enrollNewKey(ctx, prev)
-			if err != nil {
+			if err != nil && !isTransientNetErr(err) {
 				enrollErr = true
 			}
 		} else if inRegBackoff {
@@ -697,7 +697,7 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 				// on the existing registered device if we haven't tried it yet.
 				if canPatch {
 					nextCfg, err = enrollNewKey(ctx, prev)
-					if err != nil {
+					if err != nil && !isTransientNetErr(err) {
 						enrollErr = true
 					}
 				}

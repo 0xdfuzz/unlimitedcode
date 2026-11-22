@@ -130,6 +130,14 @@ func isRateLimitErr(err error) bool {
 	return errors.Is(err, errCloudflareRateLimit)
 }
 
+func isTransientNetErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
 // registerAndEnroll creates a new Cloudflare WARP device and immediately
 // enrolls a fresh P-256 MASQUE keypair. Serialized across slots so parallel
 // first-boot registrations from the same home IP do not hit Cloudflare 429s.
@@ -250,7 +258,7 @@ func enrollNewKey(ctx context.Context, prev slotConfig) (slotConfig, error) {
 }
 
 var directDialer = &net.Dialer{
-	Timeout:   10 * time.Second,
+	Timeout:   5 * time.Second,
 	KeepAlive: 30 * time.Second,
 }
 
@@ -358,7 +366,7 @@ func cfRequest(ctx context.Context, method, rawURL, token string, payload any, o
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{
-		Timeout:   15 * time.Second,
+		Timeout:   6 * time.Second,
 		Transport: directTransport,
 	}
 	resp, err := client.Do(req)
@@ -666,6 +674,7 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		lastErr  error
 	)
 	for i, ep := range c.endpoints {
+		_ = i
 		netName := "udp4"
 		bindAddr := &net.UDPAddr{IP: net.IPv4zero}
 		if ep.IP.To4() == nil {
@@ -679,17 +688,12 @@ func (c *l4Client) ensureConn(ctx context.Context) (*http3.ClientConn, net.Addr,
 		}
 		// ConnectionIDLength=20 avoids Cloudflare MASQUE PROTOCOL_VIOLATION disconnects.
 		tr := &quic.Transport{Conn: uc, ConnectionIDLength: 20}
-		epCtx := ctx
-		var epCancel context.CancelFunc
-		// Cap each non-final endpoint so a blackholed IPv4 route on IPv6-only
-		// mobile data still leaves time to try the IPv6 endpoint in the same dial.
-		if i < len(c.endpoints)-1 {
-			epCtx, epCancel = context.WithTimeout(ctx, 3*time.Second)
-		}
+		// Cap every endpoint handshake (both IPv4 and IPv6) so a blackholed or
+		// unreachable route fails fast within ~3.5s instead of burning the
+		// caller's entire 45s hop budget.
+		epCtx, epCancel := context.WithTimeout(ctx, 3500*time.Millisecond)
 		qc, err := tr.Dial(epCtx, ep, c.tlsConfig, c.quicConfig)
-		if epCancel != nil {
-			epCancel()
-		}
+		epCancel()
 		if err != nil {
 			_ = tr.Close()
 			_ = uc.Close()
