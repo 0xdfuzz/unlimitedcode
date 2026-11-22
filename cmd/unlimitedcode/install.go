@@ -195,6 +195,12 @@ func cmdInstall(args []string, interactive bool) {
 	}
 	fmt.Printf("proxy     %s (OpenCode service env)\n", proxyURL)
 
+	// Stop any previously running daemon so OpenCode immediately launches the
+	// newly installed binary rather than keeping an older build alive in memory.
+	if stopRunningDaemon(cfg.Control) {
+		fmt.Println("daemon    stopped (will restart with updated binary)")
+	}
+
 	// Restart every discovered OpenCode background service (CLI + Desktop sidecar)
 	// so the updated plugin and proxy env apply immediately.
 	if restartOpenCodeServices() {

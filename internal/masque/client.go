@@ -732,6 +732,13 @@ func (c *l4Client) resetConn(expected *http3.ClientConn) {
 	closeQUICResources(qc, tr, uc, "reset")
 }
 
+func (c *l4Client) ActiveStreams() int {
+	c.mu.Lock()
+	n := c.activeStreams
+	c.mu.Unlock()
+	return n
+}
+
 func (c *l4Client) releaseStream() {
 	c.mu.Lock()
 	if c.activeStreams > 0 {

@@ -577,10 +577,15 @@ func (p *Pool) recycleSlot(ctx context.Context, s *slot, avoidPrefix string) err
 	s.mu.Lock()
 	s.state = "recycling"
 	prev := s.cfg
+	// If sibling sub-agents are still actively streaming on s.client, do not
+	// PATCH /reg/<prev.ID> (replacing the device's P-256 key can terminate
+	// in-flight QUIC streams on Cloudflare's edge); register a fresh device ID
+	// instead so active streams drain cleanly with zero ECONNRESET.
+	hasActiveStreams := s.client != nil && s.client.ActiveStreams() > 0
 	s.mu.Unlock()
 
 	var lastErr error
-	enrollErr := false
+	enrollErr := hasActiveStreams
 	for attempt := 1; attempt <= maxRecycleTries; attempt++ {
 		if ctx.Err() != nil {
 			s.setFailed(ctx.Err())
